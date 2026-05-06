@@ -8,3 +8,7 @@ Proxy attack - im trying to regurally update the proxy and find not working ones
 Bypass - Trying to bypass newest Anti-DDoS.
 ---
 ## Created by osk4rrv.
+---
+## preview
+<img width="1915" height="993" alt="image" src="https://github.com/user-attachments/assets/59a921e3-4012-42a5-9fc6-15d859a8c4ed" />
+
