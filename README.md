@@ -10,5 +10,6 @@ Bypass - Trying to bypass newest Anti-DDoS.
 ## Created by osk4rrv.
 ---
 ## preview
-<img width="1915" height="993" alt="image" src="https://github.com/user-attachments/assets/59a921e3-4012-42a5-9fc6-15d859a8c4ed" />
+<img width="1907" height="948" alt="image" src="https://github.com/user-attachments/assets/d4064899-7246-4fad-8cad-0ba47134ffa5" />
+
 
