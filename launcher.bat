@@ -1,7 +1,4 @@
 @echo off
-title osk4rrvdos
-chcp 65001 >nul
-
 set "SCRIPT=%~dp0dos.py"
 
 where python >nul 2>&1
@@ -20,5 +17,4 @@ if %errorlevel% neq 0 (
     "%PY%" -m pip install aiohttp --quiet
 )
 
-"%PY%" "%SCRIPT%" %*
-pause
+start "" "%PY%" "%SCRIPT%" %*
