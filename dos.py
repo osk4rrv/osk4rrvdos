@@ -1591,7 +1591,7 @@ def main():
     global known_good_paths, total_proxy_used, total_direct_used
     global boost_mode, multi_method, post_bomb, slow_read, adaptive_scaling, payload_size, session_count
     global cf_kill, direct_origin, origin_ips, cf_origin_found, cf_subdomains_found, cf_origin_target
-    global use_http2, enable_websocket, force_close_conns, command_line_args
+    global use_http2, enable_websocket, force_close_conns, command_line_args, use_curl_cffi
 
     interactive = True
     cli = getattr(sys.modules[__name__], "command_line_args", None)
@@ -1656,6 +1656,8 @@ def main():
     use_http2 = bool(cli.http2 if cli else False)
     enable_websocket = bool(cli.websocket if cli else False)
     force_close_conns = bool(cli.force_close if cli else False)
+    if cli and cli.no_curl:
+        use_curl_cffi = False
 
     if cli and cli.payload_size:
         payload_size = cli.payload_size * 1024
@@ -1755,7 +1757,7 @@ def main():
     if cli and cli.conns and cli.conns > 0:
         conns = cli.conns
     elif use_curl_cffi:
-        conns = 5
+        conns = 15
     elif cf_kill and direct_origin and origin_ips:
         conns = 120 // session_count
     elif boost_mode:
@@ -1877,6 +1879,7 @@ def parse_args():
     parser.add_argument("--payload-size", type=int, default=1, help="Payload size in KB")
     parser.add_argument("--sessions", type=int, default=3, help="Number of sessions")
     parser.add_argument("--conns", type=int, default=0, help="Connections per session (0=auto)")
+    parser.add_argument("--no-curl", action="store_true", help="Disable curl_cffi TLS impersonation (use aiohttp)")
     parser.add_argument("--config", "-C", type=str, help="Config file path")
     return parser.parse_args()
 
