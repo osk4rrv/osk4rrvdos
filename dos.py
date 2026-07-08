@@ -326,7 +326,6 @@ adaptive_cooldown = False
 
 cf_kill = False
 origin_ips = []
-verified_origin = None
 direct_origin = False
 cf_cookies = {}
 cf_origin_found = 0
